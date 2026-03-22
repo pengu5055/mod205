@@ -16,6 +16,7 @@ class SORLattice:
     Class for root rank to instantiate the full SOR grid and partition it into chunks for each rank.
     """
     def __init__(self, 
+                 comm: MPI.Comm,
                  domain_mask: np.ndarray,
                  dx: float,
                  rhs_value: float,
@@ -28,30 +29,27 @@ class SORLattice:
 
         Parameters
         ----------
-        global_dimensions : tuple
-            Dimensions of the full grid (x_dim, y_dim).
-        chunks : int 
-            Number of chunks to partition the grid into along each dimension (e.g. 2 means 2x2=4 total chunks).
-        verbose : bool, optional
-            Whether to print verbose output during initialization and execution, by default False.
+        
         """
         print(f"[bold green][Rank 0][/bold green] Initializing SORLattice with {chunks}x{chunks} chunks...")
-        self.comm = MPI.COMM_WORLD
+        self.comm = comm
         self.rank = self.comm.Get_rank()
         self.size = self.comm.Get_size()
         assert self.rank == 0, "SORLattice should only be instantiated on the root rank (rank 0)."
 
-        self.dx = dx
-        self.tol = tol
-        self.omega = omega
+        # Never liked this tab style format but really helps readability heh..
+        self.dx          = dx
+        self.tol         = tol
+        self.omega       = omega
         self.domain_mask = domain_mask.astype(bool)
-        self.chunks = chunks
-        self.verbose = verbose
-        self.CLIP_MIN = 1e-3
+        self.chunks      = chunks
+        self.verbose     = verbose
+        self.CLIP_MIN    = 1e-3
         
         # Create topology as a 2D grid of ranks
         self.topology = np.arange(self.chunks**2).reshape((self.chunks, self.chunks))
         self.chunks_shape = self.topology.shape
+        self.n_chunks = self.topology.size
 
         # Full domain arrays
         self.domain_mask_full = self.domain_mask.astype(bool)
@@ -149,18 +147,173 @@ class SORLattice:
 
                 if t_min is not None:
                     theta_array[i, j] = np.clip(t_min / self.dx, self.CLIP_MIN, 1.0)
-                    
+
 
         return theta_right, theta_left, theta_up, theta_down
+    
+    def _ray_intersect_segment(self, px, py, ddx, ddy, ax, ay, bx, by):
+        """
+        Compute the intersection of a ray from (px, py) in direction (ddx, ddy) with a line segment from (ax, ay) to (bx, by).
+        Returns the distance t along the ray to the intersection point, or None if no intersection.
+
+            Ray = P + t *(ddx, ddy)
+            Segment: A + s * (B - A) for s in [0, 1]
+            Need to solve for t and s such that:
+                P + t * (ddx, ddy) = A + s * (B - A)
+        """
+        # Line segment vector
+        sx = bx - ax
+        sy = by - ay
+
+        # Solve for intersection using Cramer's rule
+        det = ddx * (-sy) - ddy * (-sx)
+        if abs(det) < 1e-14:
+            return None  # Parallel lines
+
+        t = ((ax - px) * (-sy) - (ay - py) * (-sx)) / det
+        u = ((ax - px) * ddy - (ay - py) * ddx) / det
+
+        if t >= 0 and 0 <= u <= 1:
+            return t
+        else:
+            return None
+
+    def _get_chunk_slice(self, rank: int):
+        """
+        Get the idx (row_start, row_end, col_start, col_end) 
+        of interor data for a given chunk rank.
+        """
+        loc = np.where(self.topology == rank)
+        row = int(loc[0][0])
+        col = int(loc[1][0])
+        r_start = row * self.chunk_x
+        r_end = r_start + self.chunk_x
+        c_start = col * self.chunk_y
+        c_end = c_start + self.chunk_y
+
+        return r_start, r_end, c_start, c_end
+
+    def _add_ghost_borders(self, arr, r_start, r_end, c_start, c_end):
+        """
+        Extract chunk slice from full array and pad with ghost borders.
+        Ghosts outside the global domain are zero (Dirichlet BC).
+
+        Parameters
+        ----------
+        arr : np.ndarray
+            The full grid array from which to extract the chunk.
+        r_start, r_end, c_start, c_end : int
+            The start and end indices for the chunk slice in the full array.
+        """
+        rows, cols = self.full_shape
+        chunk = np.zeros((self.chunk_x + 2, self.chunk_y + 2), dtype=arr.dtype)
+        chunk[1:-1, 1:-1] = arr[r_start:r_end, c_start:c_end]
+
+        if r_start == 0:  # Top edge
+            chunk[0, 1:-1] = arr[r_start - 1, c_start:c_end]
+        if r_end < rows:  # Bottom edge
+            chunk[-1, 1:-1] = arr[r_end, c_start:c_end]
+        if c_start > 0:   # Left edge
+            chunk[1:-1, 0] = arr[r_start:r_end, c_start - 1]
+        if c_end < cols:  # Right edge
+            chunk[1:-1, -1] = arr[r_start:r_end, c_end]
+
+        return chunk
+
+    def scatter(self) -> dict:
+        """
+        Send each rank its local chunk parameters. Return rank 0's own parameters.
+        """ 
+        arrays_to_scatter = {
+            "state": self.state,
+            "domain_mask": self.domain_mask_full.astype(np.float64),
+            "RHS": self.RHS.astype(np.float64),
+            "theta_right": self.theta_right,
+            "theta_left": self.theta_left,
+            "theta_up": self.theta_up,
+            "theta_down": self.theta_down,
+        }
+
+        rank0_params = None
+
+        for target_rank in range(self.n_chunks):
+            r_start, r_end, c_start, c_end = self._get_chunk_slice(target_rank)
+            loc = np.where(self.topology == target_rank)
+            chunk_loc = (int(loc[0][0]), int(loc[1][0]))
+
+            params = {
+                "chunk_loc": chunk_loc,
+                "topology": self.topology,
+                "dimensions": (self.chunk_x, self.chunk_y),
+                "omega": self.omega,
+                "tol": self.tol,
+                "dx": self.dx,
+            }
+
+            for name, full_arr in arrays_to_scatter.items():
+                chunk_arr = self._add_ghost_borders(full_arr, r_start, r_end, c_start, c_end)
+                params[name] = chunk_arr
+
+            # Fix mask back to bool after padding ghost borders
+            params["domain_mask"] = params["domain_mask"].astype(bool)
+
+            if target_rank == 0:
+                rank0_params = params
+            else:
+                self.comm.send(params, dest=target_rank, tag=99)
+        
+        return rank0_params
+    
+    def _gather_chunks(self):
+        """
+        Gather all chunks to the root process.
+        """
+        # Dirty Fix: Subtract 2 from x_dim and y_dim to remove ghost rows and columns
+        self.x_dim -= 2
+        self.y_dim -= 2
+
+        if self.verbose:
+            print(f"[bold green][Rank {self.rank}][/bold green] Final State Sum: {np.sum(self.state)}")
+            print(f"[bold green][Rank {self.rank}][/bold green] Local state has NaN: {np.isnan(self.state).any()}")
+        if self.rank == 0:
+            print(f"[bold green][Rank {self.rank}][/bold green] {self.x_dim} x {self.y_dim} grid with {self.size} chunks.")
+            self.chunks_s_init = np.zeros((self.size, self.x_dim, self.y_dim), dtype=self.state.dtype)
+            self.chunks_s_final = np.zeros((self.size, self.x_dim, self.y_dim), dtype=self.state.dtype)
+            self.comm.Gather(self.init_state, self.chunks_s_init, root=0)
+            self.comm.Gather(self.state, self.chunks_s_final, root=0)
+
+            self.full_s_final = np.zeros((self.chunks * self.x_dim, self.chunks * self.y_dim), dtype=self.state.dtype)
+            self.full_s_init = np.zeros((self.chunks * self.x_dim, self.chunks * self.y_dim), dtype=self.state.dtype)
+
+            # Reconstruct the full grid
+            for rank in range(self.size):
+                row = rank // self.chunks
+                col = rank % self.chunks
+                self.full_s_final[
+                    row * self.x_dim : (row + 1) * self.x_dim,
+                    col * self.y_dim : (col + 1) * self.y_dim
+                ] = self.chunks_s_final[rank]
+                self.full_s_init[
+                    row * self.x_dim : (row + 1) * self.x_dim,
+                    col * self.y_dim : (col + 1) * self.y_dim
+                ] = self.chunks_s_init[rank]
+        
+            return self.full_s_init, self.full_s_final
+        else:
+            self.comm.Gather(self.init_state, None, root=0)
+            self.comm.Gather(self.state, None, root=0)
+
+        
 
 class SORChunk:
     """
-    A class to instantiate a chunk of the SOR grid.
+    Worker chunk of the SOR grid. Receives its local slice from SORLattice via MPI.
+    All ranks including 0 instantiate this — rank 0 gets its params returned directly
+    from SORLattice.scatter(), all others receive via comm.recv(tag=99).
     """
     def __init__(self, 
-                 topology: Iterable,
-                 dimensions: tuple[int, int],
-                 verbose: bool = False) -> None:
+                 comm: MPI.Comm,
+                 params: dict = None) -> None: 
         """
         MPI-based constructor for a chunk of the SOR grid.
 
@@ -173,49 +326,59 @@ class SORChunk:
 
         RHS = q * dx^2/2 for Poisson's equation with source term q. 
         """
-        self.comm = MPI.COMM_WORLD
+        self.comm = comm
         self.rank = self.comm.Get_rank()
         self.size = self.comm.Get_size()
 
-        # Determine neighbors from topology
-        self.topology = topology
+        if params is None:
+            params = self.comm.recv(source=0, tag=99)
+
+        # Unpack topology and neighbor info
+        self.topology  = params['topology']
+        self.chunk_loc = params['chunk_loc']
+        self.omega     = params['omega']
+        self.tol       = params['tol']
+        self.dx        = params['dx']
+        self.zerodiv   = 1e-14
+        self.MAX_ITER  = 10000
+        self.iter      = 0
+        self.residuals = []
+        self.verbose   = params.get('verbose', False)
+
+        # Neighbor lookup from topology
         if self.topology.ndim != 1:
-            self.chunk_loc = np.where(topology == self.rank)
-            self.chunk_loc = (int(self.chunk_loc[0][0]), int(self.chunk_loc[1][0]))
-            self.chunks = topology.shape[0]
-            self.loc = topology[self.chunk_loc[0], self.chunk_loc[1]]
-            self.n_up = self.topology[self.chunk_loc[0] - 1, self.chunk_loc[1]] if self.chunk_loc[0] > 0 else self.topology[-1, self.chunk_loc[1]]
-            self.n_down = self.topology[self.chunk_loc[0] + 1, self.chunk_loc[1]] if self.chunk_loc[0] < self.chunks - 1 else self.topology[0, self.chunk_loc[1]]
-            self.n_left = self.topology[self.chunk_loc[0], self.chunk_loc[1] - 1] if self.chunk_loc[1] > 0 else self.topology[self.chunk_loc[0], -1]
-            self.n_right = self.topology[self.chunk_loc[0], self.chunk_loc[1] + 1] if self.chunk_loc[1] < self.chunks - 1 else self.topology[self.chunk_loc[0], 0]
-            self.n_neighbors = [self.n_up, self.n_down, self.n_left, self.n_right]
+            self.chunks = self.topology.shape[0]
+            y, x = self.chunk_loc
+            self.n_up    = self.topology[y - 1, x] if y > 0               else self.topology[-1, x]
+            self.n_down  = self.topology[y + 1, x] if y < self.chunks - 1 else self.topology[0,  x]
+            self.n_left  = self.topology[y, x - 1] if x > 0               else self.topology[y, -1]
+            self.n_right = self.topology[y, x + 1] if x < self.chunks - 1 else self.topology[y,  0]
         else:
-            self.chunk_loc = (0, 0)
-            self.chunks = topology.shape[0]
-            self.n_up = topology[0]
-            self.n_down = topology[-1]
-            self.n_left = topology[0]
-            self.n_right = topology[-1]
-            self.n_neighbors = [self.n_up, self.n_down, self.n_left, self.n_right]
+            self.chunks  = self.topology.shape[0]
+            self.n_up    = self.topology[0]
+            self.n_down  = self.topology[-1]
+            self.n_left  = self.topology[0]
+            self.n_right = self.topology[-1]
+        self.n_neighbors = [self.n_up, self.n_down, self.n_left, self.n_right]
 
-        self.x_dim, self.y_dim = dimensions
-        if self.x_dim % 2 != 0 or self.y_dim % 2 != 0:
-            raise ValueError("Dimensions must be even/divisible by 2.")
-        self.x_dim += 2  # Add ghost rows
-        self.y_dim += 2  # Add ghost columns
+        # Unpack local arrays (all already include ghost ring from SORLattice._add_ghosts)
+        self.state         = params['state'].astype(np.float64)
+        self.init_state    = self.state.copy()
+        self.domain_mask   = params['interior_mask'].astype(bool)
+        self.theta_right   = params['theta_right']
+        self.theta_left    = params['theta_left']
+        self.theta_up      = params['theta_up']
+        self.theta_down    = params['theta_down']
+        self.RHS           = params['rhs']
 
-        # Various internal variables
-        self.zerodiv = 1e-14
-        self.RHS = 0.0
-        self.MAX_ITER = 10000
+        # GHOST HALO INCLUDED HERE 
+        self.x_dim, self.y_dim = self.state.shape  
 
-        self.init_state = None
-        self.state = None
-        self._randomize_state()
+        if self.verbose:
+            print(f"[bold green][Rank {self.rank}][/bold green] Ready! "
+                  f"loc={self.chunk_loc} neighbors=({self.n_up},{self.n_down},{self.n_left},{self.n_right}) "
+                  f"shape={self.state.shape}")
 
-        print(f"[bold green][Rank {self.rank}][/bold green] Ready! My location is " +
-              f"{self.chunk_loc} with neighbors {self.n_up}, {self.n_down}, {self.n_left}, {self.n_right}.")
-        
     def _randomize_state(self) -> None:
         self.state = np.random.rand(self.x_dim, self.y_dim)
         self.init_state = self.state.copy()
@@ -404,45 +567,6 @@ class SORChunk:
         global_l2 = self.comm.allreduce(local_l2, op=MPI.SUM)
 
         return np.sqrt(global_l2)
-
-    def _gather_chunks(self):
-        """
-        Gather all chunks to the root process.
-        """
-        # Dirty Fix: Subtract 2 from x_dim and y_dim to remove ghost rows and columns
-        self.x_dim -= 2
-        self.y_dim -= 2
-
-        if self.verbose:
-            print(f"[bold green][Rank {self.rank}][/bold green] Final State Sum: {np.sum(self.state)}")
-            print(f"[bold green][Rank {self.rank}][/bold green] Local state has NaN: {np.isnan(self.state).any()}")
-        if self.rank == 0:
-            print(f"[bold green][Rank {self.rank}][/bold green] {self.x_dim} x {self.y_dim} grid with {self.size} chunks.")
-            self.chunks_s_init = np.zeros((self.size, self.x_dim, self.y_dim), dtype=self.state.dtype)
-            self.chunks_s_final = np.zeros((self.size, self.x_dim, self.y_dim), dtype=self.state.dtype)
-            self.comm.Gather(self.init_state, self.chunks_s_init, root=0)
-            self.comm.Gather(self.state, self.chunks_s_final, root=0)
-
-            self.full_s_final = np.zeros((self.chunks * self.x_dim, self.chunks * self.y_dim), dtype=self.state.dtype)
-            self.full_s_init = np.zeros((self.chunks * self.x_dim, self.chunks * self.y_dim), dtype=self.state.dtype)
-
-            # Reconstruct the full grid
-            for rank in range(self.size):
-                row = rank // self.chunks
-                col = rank % self.chunks
-                self.full_s_final[
-                    row * self.x_dim : (row + 1) * self.x_dim,
-                    col * self.y_dim : (col + 1) * self.y_dim
-                ] = self.chunks_s_final[rank]
-                self.full_s_init[
-                    row * self.x_dim : (row + 1) * self.x_dim,
-                    col * self.y_dim : (col + 1) * self.y_dim
-                ] = self.chunks_s_init[rank]
-        
-            return self.full_s_init, self.full_s_final
-        else:
-            self.comm.Gather(self.init_state, None, root=0)
-            self.comm.Gather(self.state, None, root=0)
 
     def run(self):
         """
