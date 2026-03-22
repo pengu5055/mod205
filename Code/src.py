@@ -11,6 +11,68 @@ from skimage.measure import find_contours
 import h5py as h5
 import hdf5plugin
 
+def make_house_mask(N: int, pad: int = 1) -> np.ndarray:
+    """
+    Build boolean domain mask for the house+cross shape on an NxN grid.
+    (N - 2 * pad) must be divisible by 3.
+
+        3x3 sub-square layout:
+        [0=TL-out, 1=TR-out, 2=out]
+        [3=in,     4=in,     5=in ]
+        [6=out,    7=in,     8=out]
+    
+        Peak of roof at (row=0, col=2s) — shared corner of chunks 0 and 1.
+        
+        
+    
+    Parameters
+    ----------
+    N : int
+        The size of the grid including the padding.
+    pad : int
+        The width of the padding around the grid. 
+        The actual interior domain will be (N - 2*pad) x (N - 2*pad).
+    """
+    inner = N - 2 * pad
+    assert inner % 3 == 0, f"N - 2*pad = {inner} must be divisible by 3."
+    si = inner // 3
+
+    mask_inner = np.zeros((inner, inner), dtype=bool)
+    rows, cols = np.indices((inner, inner))
+
+    # Middle row: chunks 3, 4, 5 — fully interior
+    mask_inner[si:2*si, :] = True
+
+    # Bottom center: chunk 7 — fully interior
+    mask_inner[2*si:3*si, si:2*si] = True
+
+    # Chunk 0 diagonal: (row=0, col=2s) -> (row=s, col=s)   top-left cut out
+    r0 = rows[0:si, si:2*si]
+    c0 = cols[0:si, si:2*si]
+    mask_inner[0:si, si:2*si] = (r0 + c0) >= 2*si
+
+    # Chunk 1 diagonal: (row=0, col=2s) -> (row=s, col=3s)  top-right cut out
+    r1 = rows[0:si, 2*si:3*si]
+    c1 = cols[0:si, 2*si:3*si]
+    mask_inner[0:si, 2*si:3*si] = r1 >= (c1 - 2*si)
+
+    # Embed in padded array
+    mask = np.zeros((N, N), dtype=bool)
+    mask[pad:-pad, pad:-pad] = mask_inner
+
+    # I flipped the indices arrr
+    return np.flip(mask, axis=1)
+
+def make_circle_mask(N: int, pad: int = 1) -> np.ndarray:
+    total = N + 2 * pad
+    mask = np.zeros((total, total), dtype=bool)
+    cx, cy = total / 2, total / 2
+    R = N / 2
+    rows, cols = np.indices((total, total))
+    mask = (rows - cx)**2 + (cols - cy)**2 < R**2
+
+    return mask
+
 class SORLattice:
     """
     Class for root rank to instantiate the full SOR grid and partition it into chunks for each rank.
@@ -233,6 +295,7 @@ class SORLattice:
             "theta_left": self.theta_left,
             "theta_up": self.theta_up,
             "theta_down": self.theta_down,
+            "MAX_ITER": self.MAX_ITER,
         }
 
         rank0_params = None
@@ -252,8 +315,11 @@ class SORLattice:
             }
 
             for name, full_arr in arrays_to_scatter.items():
-                chunk_arr = self._add_ghost_borders(full_arr, r_start, r_end, c_start, c_end)
-                params[name] = chunk_arr
+                if isinstance(full_arr, np.ndarray):
+                    chunk_arr = self._add_ghost_borders(full_arr, r_start, r_end, c_start, c_end)
+                    params[name] = chunk_arr
+                else:
+                    params[name] = full_arr  # Scalar parameters like MAX_ITER
 
             # Fix mask back to bool after padding ghost borders
             params["domain_mask"] = params["domain_mask"].astype(bool)
@@ -264,6 +330,16 @@ class SORLattice:
                 self.comm.send(params, dest=target_rank, tag=99)
         
         return rank0_params
+    
+    def reset(self, omega: float) -> dict:
+        """
+        Reset solution state and update omega for a new sweep.
+        Avoids recomputing theta arrays.
+        """
+        self.omega = omega
+        self.state = np.zeros_like(self.domain_mask_full, dtype=np.float64)
+
+        return self.scatter()
     
     def gather(self, chunk_array: np.ndarray):
         """
@@ -295,7 +371,6 @@ class SORLattice:
 
         return interior_sum * self.dx**2 / area
 
-
 class SORChunk:
     """
     Worker chunk of the SOR grid. Receives its local slice from SORLattice via MPI.
@@ -304,7 +379,8 @@ class SORChunk:
     """
     def __init__(self, 
                  comm: MPI.Comm,
-                 params: dict = None) -> None: 
+                 params: dict = None,
+                 verbose: bool = False) -> None: 
         """
         MPI-based constructor for a chunk of the SOR grid.
 
@@ -331,10 +407,12 @@ class SORChunk:
         self.tol       = params['tol']
         self.dx        = params['dx']
         self.zerodiv   = 1e-14
-        self.MAX_ITER  = 10000
+        self.MAX_ITER  = params.get('MAX_ITER', 10000)
         self.iter      = 0
         self.residuals = []
-        self.verbose   = params.get('verbose', False)
+        self.verbose   = verbose
+        self.very_verbose = False  # Internal flag for extra debug prints during communication steps
+        self.bar = False
 
         # Neighbor lookup from topology
         if self.topology.ndim != 1:
@@ -379,7 +457,7 @@ class SORChunk:
         First horizontal, then vertical communication.
         """
         y_loc, x_loc = self.chunk_loc
-        if self.verbose:
+        if self.very_verbose:
             print(f"[bold green][Rank {self.rank}][/bold green] Broadcasting Borders...")
 
         # Phase 1: horizontal communication
@@ -416,7 +494,7 @@ class SORChunk:
                 sendbuf = self.state[1:-1, 1].copy()
                 self.comm.Send(sendbuf, dest=self.n_left, tag=11)
 
-        if self.verbose:
+        if self.very_verbose:
                 print(f"[bold green][Rank {self.rank}][/bold green] Waiting at barrier...")
         self.comm.Barrier()
     
@@ -454,7 +532,7 @@ class SORChunk:
                 sendbuf = self.state[1, 1:-1].copy()
                 self.comm.Send(sendbuf, dest=self.n_up, tag=21)
     
-            if self.verbose:
+            if self.very_verbose:
                 print(f"[bold green][Rank {self.rank}][/bold green] Waiting at barrier...")
         self.comm.Barrier()
 
@@ -463,6 +541,7 @@ class SORChunk:
         Perform one full SOR sweep: Red (parity 0) then Black (parity 1) half-steps with
         ghost border broadcasts in between.
         """
+        self.prev_state = self.state.copy()
         self._broadcast_borders()
         self._sor_update(parity=0)
 
@@ -520,6 +599,12 @@ class SORChunk:
         self.state[update_mask] = u_new[update_mask]
 
     def _global_residual(self):
+        delta = self.state - self.prev_state
+        local_l2 = np.sum((delta[self.domain_mask])**2)
+        global_l2 = self.comm.allreduce(local_l2, op=MPI.SUM)
+        return np.sqrt(global_l2)
+
+    def _global_residual_laplace(self):
         """
         Compute the global L2 residual of Poisson's equation across all ranks.
         Use the same Shortley-Weller weights as the update. Only use interior points.
@@ -562,15 +647,15 @@ class SORChunk:
         # Wait for all ranks to initialize
         self.comm.Barrier()
 
-        if self.rank == 0 and self.verbose:
+        if self.rank == 0 and self.verbose and self.bar:
             with Progress() as p:
                 task = p.add_task(f"[bold green][All Ranks][/bold green]", total=self.MAX_ITER)
                 while self.iter < self.MAX_ITER:
                     self._sor_step()
-                    residual = self._global_residual()
+                    residual = self._global_residual_laplace()
                     self.residuals.append(residual)
                     self.iter += 1
-                    p.update(task, advance=1)
+                    p.update(task, advance=1, refresh=True, description=f"[bold green][All Ranks][/bold green] Iter {self.iter}, Residual {residual:.2e}")
 
                     if residual < self.tol:
                         print(f"[bold green][Rank 0][/bold green] Converged at iteration {self.iter}, residual {residual:.2e}")
@@ -578,9 +663,11 @@ class SORChunk:
         else:
             while self.iter < self.MAX_ITER:
                 self._sor_step()
-                residual = self._global_residual()
+                residual = self._global_residual_laplace()
                 self.residuals.append(residual)
                 self.iter += 1
+                if self.verbose and self.iter % 100 == 0 and self.rank == 0:
+                    print(f"[bold green][Rank {self.rank}][/bold green] Iter {self.iter}, Residual {residual:.2e}", end='\r')
                 
                 if residual < self.tol:
                     break
@@ -588,7 +675,7 @@ class SORChunk:
         # Wait for all ranks to finish
         self.comm.Barrier()
         
-        if self.verbose:
+        if self.verbose and self.rank == 0:
             print(f"[bold green][Rank {self.rank}][/bold green] Simulation Complete. " +  
                   f"Total Iterations: {self.iter}, Final Residual: {self.residuals[-1]:.2e}")
         
