@@ -13,11 +13,11 @@ if __name__ == "__main__":
     size = comm.Get_size()
 
     if rank == 0:
-        half_interior = 99
+        half_interior = 99 * 10
         pad = 1
         N = 2 * half_interior + 2 * pad
         mask = make_circle_mask(N, pad=pad)
-        lattice = SORLattice(comm=comm, domain_mask=mask, dx=1/N, rhs_value=-1.0, omega=1.0, chunks=2, verbose=True)
+        lattice = SORLattice(comm=comm, domain_mask=mask, dx=1/N, rhs_value=-1.0, omega=1.9, chunks=2, verbose=True)
         lattice.MAX_ITER = 100000
         params = lattice.scatter()
     else:

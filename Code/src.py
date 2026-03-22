@@ -652,7 +652,7 @@ class SORChunk:
                 task = p.add_task(f"[bold green][All Ranks][/bold green]", total=self.MAX_ITER)
                 while self.iter < self.MAX_ITER:
                     self._sor_step()
-                    residual = self._global_residual_laplace()
+                    residual = self._global_residual()
                     self.residuals.append(residual)
                     self.iter += 1
                     p.update(task, advance=1, refresh=True, description=f"[bold green][All Ranks][/bold green] Iter {self.iter}, Residual {residual:.2e}")
@@ -663,10 +663,10 @@ class SORChunk:
         else:
             while self.iter < self.MAX_ITER:
                 self._sor_step()
-                residual = self._global_residual_laplace()
+                residual = self._global_residual()
                 self.residuals.append(residual)
                 self.iter += 1
-                if self.verbose and self.iter % 100 == 0 and self.rank == 0:
+                if self.iter % 100 == 0 and self.rank == 0:
                     print(f"[bold green][Rank {self.rank}][/bold green] Iter {self.iter}, Residual {residual:.2e}", end='\r')
                 
                 if residual < self.tol:
