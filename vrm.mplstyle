@@ -1,0 +1,21 @@
+font.family         : "IBM Plex Mono"
+axes.titlepad       : 10
+font.size           : 11
+axes.labelsize      : 12
+axes.labelweight    : "medium"
+axes.titlesize      : 16
+axes.titleweight    : "medium"
+axes.facecolor      : "#ebf9fc"
+axes.grid           : True
+grid.color          : "#737373"
+grid.alpha          : 0.1
+figure.titlesize    : 18
+figure.titleweight  : "bold"
+legend.facecolor    : "white"
+legend.edgecolor    : "black"
+legend.fancybox     : False
+patch.linewidth     : 0.5  # For legend frame
+
+# Suggested colors:
+# ["2b193d","2c365e","484d6d","4b8f8c","c5979d"]
+# ["37123c","d72483","ddc4dd","60afff","98CE00"]
