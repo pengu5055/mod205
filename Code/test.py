@@ -1,5 +1,5 @@
 """
-Code to run the solver.
+Test WIP Code.
 """
 import numpy as np
 from src import *
@@ -13,8 +13,13 @@ if __name__ == "__main__":
     size = comm.Get_size()
 
     if rank == 0:
-        mask = np.ones((100, 100), dtype=bool)  
-        lattice = SORLattice(comm=comm, domain_mask=mask, dx=0.1, rhs_value=-1.0, omega=1.5, chunks=1, verbose=True)
+        N = 100
+        mask = np.ones((N, N), dtype=bool)
+        mask[0, :]  = False
+        mask[-1, :] = False
+        mask[:, 0]  = False
+        mask[:, -1] = False 
+        lattice = SORLattice(comm=comm, domain_mask=mask, dx=1/N, rhs_value=-1.0, omega=1.5, chunks=1, verbose=True)
         params = lattice.scatter()
     else:
         params = None
@@ -24,6 +29,5 @@ if __name__ == "__main__":
     chunk.run()
 
     if rank == 0:
-        lattice.gather(chunk.state)
-        C = lattice.poiseuille_coeff()
+        C = lattice.poiseuille_coeff(chunk.state)
         print(f"Poiseuille coefficient: {C:.4f}")

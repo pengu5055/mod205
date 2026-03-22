@@ -82,11 +82,11 @@ class SORLattice:
         to determine values
         """
         # Initialize Full theta arrays to 1.0
-        rows, cols = self.full_shape
+        rows, cols  = self.full_shape
         theta_right = np.ones(self.full_shape, dtype=np.float64)
-        theta_left = np.ones(self.full_shape, dtype=np.float64)
-        theta_up = np.ones(self.full_shape, dtype=np.float64)
-        theta_down = np.ones(self.full_shape, dtype=np.float64)
+        theta_left  = np.ones(self.full_shape, dtype=np.float64)
+        theta_up    = np.ones(self.full_shape, dtype=np.float64)
+        theta_down  = np.ones(self.full_shape, dtype=np.float64)
 
         # Find vertices in pixel coordinates (i.e. corners of the grid cells)
         contours = find_contours(self.domain_mask.astype(float), level=0.5)
@@ -96,10 +96,10 @@ class SORLattice:
         rows = self.domain_mask.shape[0]
         for contour in contours:
             for k in range(len(contour) - 1):
-                ax = (rows - 1 - contour[k, 0]) * dx
-                ay = contour[k, 1] * dx
-                bx = (rows - 1 - contour[k + 1, 0]) * dx
-                by = contour[k + 1, 1] * dx
+                ax = contour[k, 1] * dx
+                ay = (rows - 1 - contour[k, 0]) * dx
+                bx = contour[k + 1, 1] * dx
+                by = (rows - 1 - contour[k + 1, 0]) * dx
 
                 segments.append(((ax, ay), (bx, by)))
 
@@ -136,14 +136,15 @@ class SORLattice:
                 if not (0 <= ni < rows and 0 <= nj < cols):
                     continue  # Skip out-of-bounds neighbors
                 if mask[ni, nj]:  
-                    continue
+                    continue  # Neighbor is interior, theta already 1.0
 
                 # Find closest boundary intersections in this direction
                 t_min = None
                 for (ax, ay), (bx, by) in segments:
                     t = self._ray_intersect_segment(px, py, ddx, ddy, ax, ay, bx, by)
-                    if t is None or t < t_min:
-                        t_min = t
+                    if t is None:
+                        if t_min is None or t < t_min:
+                            t_min = t
 
                 if t_min is not None:
                     theta_array[i, j] = np.clip(t_min / self.dx, self.CLIP_MIN, 1.0)
@@ -209,7 +210,7 @@ class SORLattice:
         chunk = np.zeros((self.chunk_x + 2, self.chunk_y + 2), dtype=arr.dtype)
         chunk[1:-1, 1:-1] = arr[r_start:r_end, c_start:c_end]
 
-        if r_start == 0:  # Top edge
+        if r_start > 0:  # Top edge
             chunk[0, 1:-1] = arr[r_start - 1, c_start:c_end]
         if r_end < rows:  # Bottom edge
             chunk[-1, 1:-1] = arr[r_end, c_start:c_end]
@@ -264,46 +265,36 @@ class SORLattice:
         
         return rank0_params
     
-    def _gather_chunks(self):
+    def gather(self, chunk_array: np.ndarray):
         """
-        Gather all chunks to the root process.
+        Gather the partial chunks of chunk_array to root rank
+        and reassemble the full array.
+        Assumed that chunk_array is the local chunk of the full array 
+        with ghost borders removed (i.e. shape (chunk_x, chunk_y)).
         """
-        # Dirty Fix: Subtract 2 from x_dim and y_dim to remove ghost rows and columns
-        self.x_dim -= 2
-        self.y_dim -= 2
+        r_start, r_end, c_start, c_end = self._get_chunk_slice(0)
+        r_buffer = np.empty_like(self.state, dtype=np.float64)
 
-        if self.verbose:
-            print(f"[bold green][Rank {self.rank}][/bold green] Final State Sum: {np.sum(self.state)}")
-            print(f"[bold green][Rank {self.rank}][/bold green] Local state has NaN: {np.isnan(self.state).any()}")
-        if self.rank == 0:
-            print(f"[bold green][Rank {self.rank}][/bold green] {self.x_dim} x {self.y_dim} grid with {self.size} chunks.")
-            self.chunks_s_init = np.zeros((self.size, self.x_dim, self.y_dim), dtype=self.state.dtype)
-            self.chunks_s_final = np.zeros((self.size, self.x_dim, self.y_dim), dtype=self.state.dtype)
-            self.comm.Gather(self.init_state, self.chunks_s_init, root=0)
-            self.comm.Gather(self.state, self.chunks_s_final, root=0)
+        r_buffer[r_start:r_end, c_start:c_end] = chunk_array
 
-            self.full_s_final = np.zeros((self.chunks * self.x_dim, self.chunks * self.y_dim), dtype=self.state.dtype)
-            self.full_s_init = np.zeros((self.chunks * self.x_dim, self.chunks * self.y_dim), dtype=self.state.dtype)
+        for src_rank in range(1, self.n_chunks):
+            data = self.comm.recv(source=src_rank, tag=100)
+            r_start, r_end, c_start, c_end = self._get_chunk_slice(src_rank)
+            r_buffer[r_start:r_end, c_start:c_end] = data  # Already removed when sent from chunk
 
-            # Reconstruct the full grid
-            for rank in range(self.size):
-                row = rank // self.chunks
-                col = rank % self.chunks
-                self.full_s_final[
-                    row * self.x_dim : (row + 1) * self.x_dim,
-                    col * self.y_dim : (col + 1) * self.y_dim
-                ] = self.chunks_s_final[rank]
-                self.full_s_init[
-                    row * self.x_dim : (row + 1) * self.x_dim,
-                    col * self.y_dim : (col + 1) * self.y_dim
-                ] = self.chunks_s_init[rank]
-        
-            return self.full_s_init, self.full_s_final
-        else:
-            self.comm.Gather(self.init_state, None, root=0)
-            self.comm.Gather(self.state, None, root=0)
+        return r_buffer
+    
+    def poiseuille_coeff(self, chunk) -> float:
+        """
+        Compute C = dx^2 * sum(state) over interior points.
+        For Poiseuille flow \nabal^2 u = -1, normalized by cross-sectional area.
+        """
+        self.state = self.gather(chunk)
+        interior_sum = np.sum(self.state[self.domain_mask_full])
+        area = np.sum(self.domain_mask_full) * self.dx**2
 
-        
+        return interior_sum * self.dx**2 / area
+
 
 class SORChunk:
     """
@@ -364,12 +355,12 @@ class SORChunk:
         # Unpack local arrays (all already include ghost ring from SORLattice._add_ghosts)
         self.state         = params['state'].astype(np.float64)
         self.init_state    = self.state.copy()
-        self.domain_mask   = params['interior_mask'].astype(bool)
+        self.domain_mask   = params['domain_mask'].astype(bool)
         self.theta_right   = params['theta_right']
         self.theta_left    = params['theta_left']
         self.theta_up      = params['theta_up']
         self.theta_down    = params['theta_down']
-        self.RHS           = params['rhs']
+        self.RHS           = params['RHS']
 
         # GHOST HALO INCLUDED HERE 
         self.x_dim, self.y_dim = self.state.shape  
@@ -378,10 +369,6 @@ class SORChunk:
             print(f"[bold green][Rank {self.rank}][/bold green] Ready! "
                   f"loc={self.chunk_loc} neighbors=({self.n_up},{self.n_down},{self.n_left},{self.n_right}) "
                   f"shape={self.state.shape}")
-
-    def _randomize_state(self) -> None:
-        self.state = np.random.rand(self.x_dim, self.y_dim)
-        self.init_state = self.state.copy()
 
     def _broadcast_borders(self):
         """
@@ -570,7 +557,7 @@ class SORChunk:
 
     def run(self):
         """
-        Run the SOR algorithm.
+        Run the SOR algorithm until convergence or max iterations. 
         """
         # Wait for all ranks to initialize
         self.comm.Barrier()
@@ -601,13 +588,15 @@ class SORChunk:
         # Wait for all ranks to finish
         self.comm.Barrier()
         
-        # Truncate state to original dimensions (remove ghost rows and columns)
-        self.state = np.ascontiguousarray(self.state[1:-1, 1:-1])
-        self.init_state = np.ascontiguousarray(self.init_state[1:-1, 1:-1])
-
         if self.verbose:
             print(f"[bold green][Rank {self.rank}][/bold green] Simulation Complete. " +  
-                  f"Final Energy: {self.energy}, Final Temperature: {self.temperature}, Total Iterations: {self.iter}")
+                  f"Total Iterations: {self.iter}, Final Residual: {self.residuals[-1]:.2e}")
+        
+        # Truncate state to original dimensions (remove ghost rows and columns)
+        self.state = np.ascontiguousarray(self.state[1:-1, 1:-1])
+            
+        # Send final state back to rank 0
+        if self.rank != 0:
+            self.comm.send(self.state, dest=0, tag=100)
 
-
-        return self.init_state, self.state, self._energy_list
+        return self.state, self.residuals
