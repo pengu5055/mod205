@@ -601,12 +601,14 @@ class SORChunk:
 
     def _global_residual(self):
         delta = self.state - self.prev_state
+        local_l2 = np.sum((delta[self.domain_mask])**2)
 
-        # Cast to float to avoid buffer size mismatch in MPI reduction
-        local_l2 = float(np.sum((delta[self.domain_mask])**2))
-        global_l2 = self.comm.allreduce(local_l2, op=MPI.SUM)
-        
-        return np.sqrt(global_l2)
+        # Switch to buffer-based Allreduce
+        send_buf = np.array([local_l2], dtype=np.float64)
+        recv_buf = np.zeroes(1, dtype=np.float64)
+        self.comm.Allreduce(send_buf, recv_buf, op=MPI.SUM)
+
+        return float(np.sqrt(recv_buf[0]))
 
     def _global_residual_laplace(self):
         """
