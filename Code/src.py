@@ -452,89 +452,54 @@ class SORChunk:
     def _broadcast_borders(self):
         """
         Broadcast the borders of the lattice to neighboring processes.
-        Due to Checkerboard update we send all borders two times per step.
-
-        Even ranks send first. Odd ranks receive first.
-        First horizontal, then vertical communication.
+        This cleaner function replaces the previous two-phase approach.
+        It was taken from my project `TDS-Final`
+        https://forge.ephemera.zip/pengu5055/TDS-final/src/branch/main/Code/src.py#L752
+        https://github.com/pengu5055/TDS-final/blob/main/Code/src.py#L752
         """
-        y_loc, x_loc = self.chunk_loc
-        if self.very_verbose:
-            print(f"[bold green][Rank {self.rank}][/bold green] Broadcasting Borders...")
+        local_x = self.x_dim - 2
+        local_y = self.y_dim - 2
 
-        # Phase 1: horizontal communication
-        if x_loc % 2 == 0:
-            if self.n_right != self.rank:
-                sendbuf = self.state[1:-1, -2].copy()
-                self.comm.Send(sendbuf, dest=self.n_right, tag=10)
-            if self.n_left != self.rank:
-                recvbuf = np.empty_like(self.state[1:-1, 0])
-                self.comm.Recv(recvbuf, source=self.n_left, tag=10)
-                self.state[1:-1, 0] = recvbuf
-    
-            if self.n_left != self.rank:
-                sendbuf = self.state[1:-1, 1].copy()
-                self.comm.Send(sendbuf, dest=self.n_left, tag=11)
-            if self.n_right != self.rank:
-                recvbuf = np.empty_like(self.state[1:-1, -1])
-                self.comm.Recv(recvbuf, source=self.n_right, tag=11)
-                self.state[1:-1, -1] = recvbuf
-        else:
-            if self.n_left != self.rank:
-                recvbuf = np.empty_like(self.state[1:-1, 0])
-                self.comm.Recv(recvbuf, source=self.n_left, tag=10)
-                self.state[1:-1, 0] = recvbuf
-            if self.n_right != self.rank:
-                sendbuf = self.state[1:-1, -2].copy()
-                self.comm.Send(sendbuf, dest=self.n_right, tag=10)
-    
-            if self.n_right != self.rank:
-                recvbuf = np.empty_like(self.state[1:-1, -1])
-                self.comm.Recv(recvbuf, source=self.n_right, tag=11)
-                self.state[1:-1, -1] = recvbuf
-            if self.n_left != self.rank:
-                sendbuf = self.state[1:-1, 1].copy()
-                self.comm.Send(sendbuf, dest=self.n_left, tag=11)
+        left_send = self.state[1:-1, 1].copy()
+        left_recv = np.empty((local_x, ), dtype=self.state.dtype)
+        right_send = self.state[1:-1, -2].copy()
+        right_recv = np.empty((local_x, ), dtype=self.state.dtype)
 
-        if self.very_verbose:
-                print(f"[bold green][Rank {self.rank}][/bold green] Waiting at barrier...")
+        # send to left, receive from right
+        self.comm.Sendrecv(sendbuf=left_send,
+                   dest=self.n_left, sendtag=0,
+                   recvbuf=right_recv,
+                   source=self.n_right, recvtag=0)
+        self.state[1:-1, -1] = right_recv
+
+        # send to right, receive from left
+        self.comm.Sendrecv(sendbuf=right_send,
+                           dest=self.n_right, sendtag=1,
+                           recvbuf=left_recv,
+                           source=self.n_left, recvtag=1)
+        self.state[1:-1, 0] = left_recv
+
         self.comm.Barrier()
-    
-        # Phase 2: vertical communication
-        if y_loc % 2 == 0:
-            if self.n_down != self.rank:
-                sendbuf = self.state[-2, 1:-1].copy()
-                self.comm.Send(sendbuf, dest=self.n_down, tag=20)
-            if self.n_up != self.rank:
-                recvbuf = np.empty_like(self.state[0, 1:-1])
-                self.comm.Recv(recvbuf, source=self.n_up, tag=20)
-                self.state[0, 1:-1] = recvbuf
-    
-            if self.n_up != self.rank:
-                sendbuf = self.state[1, 1:-1].copy()
-                self.comm.Send(sendbuf, dest=self.n_up, tag=21)
-            if self.n_down != self.rank:
-                recvbuf = np.empty_like(self.state[-1, 1:-1])
-                self.comm.Recv(recvbuf, source=self.n_down, tag=21)
-                self.state[-1, 1:-1] = recvbuf
-        else:
-            if self.n_up != self.rank:
-                recvbuf = np.empty_like(self.state[1, 1:-1])
-                self.comm.Recv(recvbuf, source=self.n_up, tag=20)
-                self.state[1, 1:-1] = recvbuf
-            if self.n_down != self.rank:
-                sendbuf = self.state[-2, 1:-1].copy()
-                self.comm.Send(sendbuf, dest=self.n_down, tag=20)
-    
-            if self.n_down != self.rank:
-                recvbuf = np.empty_like(self.state[-1, 1:-1])
-                self.comm.Recv(recvbuf, source=self.n_down, tag=21)
-                self.state[-1, 1:-1] = recvbuf
-            if self.n_up != self.rank:
-                sendbuf = self.state[1, 1:-1].copy()
-                self.comm.Send(sendbuf, dest=self.n_up, tag=21)
-    
-            if self.very_verbose:
-                print(f"[bold green][Rank {self.rank}][/bold green] Waiting at barrier...")
+
+        top_send = self.state[1, 1:-1].copy()
+        top_recv = np.empty((local_y, ), dtype=self.state.dtype)
+        bottom_send = self.state[-2, 1:-1].copy()
+        bottom_recv = np.empty((local_y, ), dtype=self.state.dtype)
+
+        # send to top, receive from bottom
+        self.comm.Sendrecv(sendbuf=top_send,
+                   dest=self.n_up, sendtag=2,
+                   recvbuf=bottom_recv,
+                   source=self.n_down, recvtag=2)
+        self.state[-1, 1:-1] = bottom_recv
+
+        # send to bottom, receive from top
+        self.comm.Sendrecv(sendbuf=bottom_send,
+                            dest=self.n_down, sendtag=3,
+                            recvbuf=top_recv,
+                            source=self.n_up, recvtag=3)
+        self.state[0, 1:-1] = top_recv
+
         self.comm.Barrier()
 
     def _sor_step(self):
