@@ -605,7 +605,7 @@ class SORChunk:
 
         # Switch to buffer-based Allreduce
         send_buf = np.array([local_l2], dtype=np.float64)
-        recv_buf = np.zeroes(1, dtype=np.float64)
+        recv_buf = np.zeros(1, dtype=np.float64)
         self.comm.Allreduce(send_buf, recv_buf, op=MPI.SUM)
 
         return float(np.sqrt(recv_buf[0]))
