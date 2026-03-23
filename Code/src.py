@@ -338,6 +338,7 @@ class SORLattice:
         """
         self.omega = omega
         self.state = np.zeros_like(self.domain_mask_full, dtype=np.float64)
+        self.residuals = []
 
         return self.scatter()
     
