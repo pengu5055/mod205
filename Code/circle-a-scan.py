@@ -10,12 +10,11 @@ from time import time
 import h5py as h5
 import hdf5plugin
 
+N = 418
 a0 = 0.1
-a1 = 2.0
+a1 = N / np.pi
 num_points = 3
-half_interior = 99
 pad = 1
-N = 2 * half_interior + 2 * pad
 
 if __name__ == "__main__":
     ts = time()
@@ -36,11 +35,11 @@ if __name__ == "__main__":
         
         mask = make_circle_mask(N, pad=pad)
         lattice = SORLattice(comm=comm, domain_mask=mask, dx=1/N, rhs_value=-1.0, omega=PLACEHOLDER, chunks=int(np.sqrt(size)), verbose=True)
-        lattice.MAX_ITER = 100000
+        lattice.MAX_ITER = 50000
 
     for i, a in enumerate(alpha):
         if rank == 0:
-            print(f"Running alpha={a:.2f} ({i+1}/{len(alpha)})")
+            print(f"Running alpha={a:.3f}, omega={omega_ansatz(a, N):.3f} ({i+1}/{len(alpha)})")
             lattice.reset(omega_ansatz(a, N))
             params = lattice.scatter()
         else:
