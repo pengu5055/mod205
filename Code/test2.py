@@ -39,7 +39,7 @@ if __name__ == "__main__":
         "inner":  "neumann",
         "outer": {
             "bottom_half": "dirichlet",
-            "top_half":    "dirichlet",
+            "top_half":    "neumann",
         }
 }
 

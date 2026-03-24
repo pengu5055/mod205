@@ -874,6 +874,8 @@ class CylindricalSORChunk(SORChunk):
                  comm: MPI.Comm,
                  params: dict = None,
                  verbose: bool = False) -> None:
+        if params is None:
+            params = comm.recv(source=0, tag=99)
 
         super().__init__(comm, params, verbose)
 
