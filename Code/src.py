@@ -762,9 +762,22 @@ class CylindricalSORLattice(SORLattice):
         Nz, Nr = self.full_shape
 
         # Create physical coordinate arrays
-        r_coords_1d = np.linspace(0, R, Nr)
-        z_coords_1d = (np.linspace(0, H, Nz))[::-1]  # Reverse so z=0 at bottom row
-        self.r_coords, self.z_coords = np.meshgrid(r_coords_1d, z_coords_1d)
+        pad = 1
+
+        # Linspace over interior only, excluding the pad ring
+        r_coords_1d = np.linspace(0, R, Nr - 2 * pad)
+        z_coords_1d = np.linspace(0, H, Nz - 2 * pad)[::-1]
+        
+        # Embed in full_shape array with zeros in pad ring
+        r_full = np.zeros((Nz, Nr))
+        z_full = np.zeros((Nz, Nr))
+        
+        r_mesh, z_mesh = np.meshgrid(r_coords_1d, z_coords_1d)
+        r_full[pad:-pad, pad:-pad] = r_mesh
+        z_full[pad:-pad, pad:-pad] = z_mesh
+        
+        self.r_coords = r_full
+        self.z_coords = z_full
 
         # Apply Dirichlet BCs to initial state where specified
         if self.bcs["outer"] == "dirichlet":
@@ -779,7 +792,8 @@ class CylindricalSORLattice(SORLattice):
 
         bcs_string = f"[bold green][Rank 0][/bold green] Cylindrical BCs applied. " + \
                      f"bcs={bcs}, flux={flux}, R={R}, H={H}"
-        self.log(strip_rich(bcs_string))
+        if self.verbose:
+            print(bcs_string)
 
     def scatter(self) -> dict:
         """
@@ -872,16 +886,16 @@ class CylindricalSORChunk(SORChunk):
 
         super().__init__(comm, params, verbose)
 
-        self.dr           = params['dr']
-        self.dz           = params['dz']
-        self.flux         = params['flux']
-        self.bcs          = params['bcs']
-        self.r_coords     = params['r_coords']   # shape (x_dim, y_dim) with ghosts
-        self.z_coords     = params['z_coords']   # shape (x_dim, y_dim) with ghosts
-        self.is_top_edge    = params['is_top_edge']
-        self.is_bottom_edge = params['is_bottom_edge']
-        self.is_inner_edge  = params['is_inner_edge']
-        self.is_outer_edge  = params['is_outer_edge']
+        self.dr        = params['dr']
+        self.dz        = params['dz']
+        self.flux      = params['flux']
+        self.bcs       = params['bcs']
+        self.r_coords  = params['r_coords']   # shape (x_dim, y_dim) with ghosts
+        self.z_coords  = params['z_coords']   # shape (x_dim, y_dim) with ghosts
+        self.is_top    = params['is_top']
+        self.is_bottom = params['is_bottom']
+        self.is_inner  = params['is_inner']
+        self.is_outer  = params['is_outer']
 
     def _sor_update(self, parity: int):
         """
