@@ -77,6 +77,46 @@ def make_circle_mask(N: int, pad: int = 1) -> np.ndarray:
 
     return mask
 
+def make_cylinder_mask(Nr: int, Nz: int, bcs: dict, pad: int = 1) -> np.ndarray:
+    """
+    Build boolean domain mask for a cylinder meridional cross-section in (r, z).
+    Interior points are True. Boundary nodes are True if Neumann (updated by solver,
+    ghost enforces BC), False if Dirichlet (fixed value, never updated).
+
+    Parameters
+    ----------
+    Nr : int
+        Number of grid points in r direction (excluding pad).
+    Nz : int
+        Number of grid points in z direction (excluding pad).
+    bcs : dict
+        Boundary condition types for each edge:
+        {"top": "dirichlet"/"neumann", ...}
+    pad : int
+        Ghost layer width.
+    """
+    total_rows = Nz + 2 * pad
+    total_cols = Nr + 2 * pad
+
+    # Start with all interior True
+    mask = np.zeros((total_rows, total_cols), dtype=bool)
+    mask[pad:-pad, pad:-pad] = True
+
+    # Set Dirichlet boundary nodes to False
+    if bcs["top"] == "dirichlet":
+        mask[pad, pad:-pad] = False        # z=H top row
+
+    if bcs["bottom"] == "dirichlet":
+        mask[-pad-1, pad:-pad] = False     # z=0 bottom row
+
+    if bcs["inner"] == "dirichlet":
+        mask[pad:-pad, pad] = False        # r=0 axis col
+
+    if bcs["outer"] == "dirichlet":
+        mask[pad:-pad, -pad-1] = False     # r=R outer col
+
+    return mask
+
 def strip_rich(text):
     return re.sub(r'\[.*?\]', '', text)
 
@@ -808,4 +848,124 @@ class CylindricalSORLattice(SORLattice):
                 self.comm.send(params, dest=target_rank, tag=99)
 
         return rank0_params
-            
+
+class CylindricalSORChunk(SORChunk):
+    """
+    Worker chunk for the CylindricalSORLattice. Inherits from SORChunk but overrides the SOR update and
+    adds _apply_neumann_bc call after each broadcast.
+
+    Stencil for interior point at (i, j) where r_j = j * dr:
+        r_{j+1/2} = r_j + dr/2
+        r_{j-1/2} = r_j - dr/2
+
+        w_R = r_{j+1/2} / (r_j * dr^2)    (outer neighbor, larger r)
+        w_L = r_{j-1/2} / (r_j * dr^2)    (inner neighbor, smaller r)
+        w_U = 1 / dz^2
+        w_D = 1 / dz^2
+
+    Shortley-Weller theta factors still applied for irregular domains. Neumann BCs enforced via ghost borders after each _broadcast_borders call.
+    """
+    def __init__(self,
+                 comm: MPI.Comm,
+                 params: dict = None,
+                 verbose: bool = False) -> None:
+
+        super().__init__(comm, params, verbose)
+
+        self.dr           = params['dr']
+        self.dz           = params['dz']
+        self.flux         = params['flux']
+        self.bcs          = params['bcs']
+        self.r_coords     = params['r_coords']   # shape (x_dim, y_dim) with ghosts
+        self.z_coords     = params['z_coords']   # shape (x_dim, y_dim) with ghosts
+        self.is_top_edge    = params['is_top_edge']
+        self.is_bottom_edge = params['is_bottom_edge']
+        self.is_inner_edge  = params['is_inner_edge']
+        self.is_outer_edge  = params['is_outer_edge']
+
+    def _sor_update(self, parity: int):
+        """
+        Override parent SOR update to implement cylindrical Laplacian stencil.
+        Asymmetric r-weights for 1/r d/dr(r dT/dr) operator.
+        Symmetric z-weights unchanged from Cartesian case.
+        Shortely-Weller theta factors still applied for off-grid boundaries.
+        """
+        u = self.state
+        r = self.r_coords
+
+        # Shift neighbor values (rolling since ghost borders prevent out-of-bounds)
+        u_R = np.roll(u, shift=-1, axis=1)
+        u_L = np.roll(u, shift=1, axis=1)
+        u_U = np.roll(u, shift=-1, axis=0)
+        u_D = np.roll(u, shift=1, axis=0)
+
+        t_R, t_L = self.theta_right, self.theta_left
+        t_U, t_D = self.theta_up, self.theta_down
+
+        dr2 = self.dr ** 2
+        dz2 = self.dz ** 2
+
+        # r=0 axis points should be excluded via domain mask + Neumann ghosts but
+        # to be safe set anyway
+        r_safe = np.where(r > 0, r, 1.0)
+
+        r_half_R = r_safe + self.dr / 2
+        r_half_L = np.maximum(r - self.dr / 2, 0.0)  # Clamp to zero to avoid negative radius
+
+        # Compute the cylindrical Shortley-Weller wights
+        w_R = r_half_R / (r_safe * t_R * (t_R + t_L) * dr2 + self.zerodiv)
+        w_L = r_half_L / (r_safe * t_L * (t_R + t_L) * dr2 + self.zerodiv)
+        w_U = 1.0 / (t_U * (t_U + t_D) * dz2 + self.zerodiv)
+        w_D = 1.0 / (t_D * (t_U + t_D) * dz2 + self.zerodiv)
+
+        w_sum = w_R + w_L + w_U + w_D
+
+        # Compute update (Laplace Eq. -> No RHS)
+        u_gs = (w_R * u_R +
+                w_L * u_L +
+                w_U * u_U +
+                w_D * u_D) / w_sum
+        u_new = (1 - self.omega) * u + self.omega * u_gs
+
+        # Now only update the points of the given parity
+        checkerboard_mask = np.indices(u.shape).sum(axis=0) % 2 == parity
+        update_mask = checkerboard_mask & self.domain_mask
+        self.state[update_mask] = u_new[update_mask]
+
+    def _apply_neumann_bc(self):
+        """
+        To be called after _broadcast_borders to enforce Neumann BCs via ghosts.
+        _broadcast_borders should have already set the Dirichlet BCs in the ghost 
+        borders where applicable, so we only need to handle Neumann cases here.
+
+        Convention for ghosts:
+            inner (r=0, left ghost col 0): symmetry dT/dr=0 -> state[:, 0] = state[:, 2]
+            botttom (z=0, bottom ghost row -1): flux dT/dz=-flux -> state[-1, :] = state[-3, :] + 2*dz*flux
+            top (z=H, top ghost row 0): if insulated, dT/dz=0 -> state[0, :] = state[2, :]
+            top (z=H, top ghost row 0): if fixed T, antisymmetric state[0, :] = -state[2, :]
+        """
+        if self.is_inner and self.bcs["inner"] == "neumann":
+            self.state[:, 0] = self.state[:, 2]
+
+        if self.is_bottom and self.bcs["bottom"] == "neumann":
+            self.state[-1, :] = self.state[-3, :] + 2 * self.dz * self.flux
+
+        if self.is_top:
+            if self.bcs["top"] == "neumann":
+                self.state[0, :] = self.state[2, :]
+            elif self.bcs["top"] == "dirichlet":
+                self.state[0, :] = -self.state[2, :]
+
+    def _sor_step(self):
+        """
+        Override parent SOR step to include Neumann BC application after each broadcast.
+        """
+        self.prev_state = self.state.copy()
+        self._broadcast_borders()
+        self._apply_neumann_bc()
+        self._sor_update(parity=0)
+
+        self._broadcast_borders()
+        self._apply_neumann_bc()
+        self._sor_update(parity=1)
+
