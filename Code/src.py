@@ -125,6 +125,8 @@ class SORLattice:
                  rhs_value: float,
                  omega: float,
                  chunks: int,
+                 chebyshev: bool = False,
+                 rho_jacobi: float = 0.0,
                  tol: float = 1e-6,
                  verbose: bool = False) -> None:
         """
@@ -148,6 +150,8 @@ class SORLattice:
         self.chunks      = chunks
         self.verbose     = verbose
         self.CLIP_MIN    = 1e-3
+        self.chebyshev   = chebyshev
+        self.rho_jacobi  = rho_jacobi
         
         # Create topology as a 2D grid of ranks
         self.topology = np.arange(self.chunks**2).reshape((self.chunks, self.chunks))
@@ -342,6 +346,8 @@ class SORLattice:
             "theta_down": self.theta_down,
             "MAX_ITER": self.MAX_ITER,
             "log_folder": self.log_folder,
+            "chebyshev": self.chebyshev,
+            "rho_jacobi": self.rho_jacobi
         }
 
         rank0_params = None
@@ -461,6 +467,12 @@ class SORChunk:
         self.very_verbose = False  # Internal flag for extra debug prints during communication steps
         self.bar = False
 
+        # Parameters for Chebyshev acceleration
+        self.chebyshev   = params.get('chebyshev', False)
+        self.rho_jacobi  = params.get('rho_jacobi', 0.0)
+        self.omega_cheb  = 1.0   # \omega^(0) = 1, tracks current Chebyshev omega
+        self.cheb_iter   = 0  # Tracks half iterations
+
         # Neighbor lookup from topology
         if self.topology.ndim != 1:
             self.chunks = self.topology.shape[0]  # Only works with square chunk topologies otherwise need seperate rows/cols
@@ -557,6 +569,19 @@ class SORChunk:
 
         self.comm.Barrier()
 
+    def _update_chebyshev_omega(self):
+        if self.rank == 0:
+            rho2 = self.rho_jacobi**2
+            if self.cheb_iter == 0:
+                self.omega_cheb = 1.0 / (1 - 0.5 * rho2)
+            else:
+                self.omega_cheb = 1.0 / (1 - 0.25 * rho2 * self.omega_cheb)
+            self.omega = self.omega_cheb
+            self.cheb_iter += 1
+        
+        # Broadcast the updated omega to all ranks
+        self.omega = self.comm.bcast(self.omega, root=0)
+
     def _sor_step(self):
         """
         Perform one full SOR sweep: Red (parity 0) then Black (parity 1) half-steps with
@@ -565,9 +590,13 @@ class SORChunk:
         self.prev_state = self.state.copy()
         self._broadcast_borders()
         self._sor_update(parity=0)
+        if self.chebyshev:
+            self._update_chebyshev_omega()
 
         self._broadcast_borders()
         self._sor_update(parity=1)
+        if self.chebyshev:
+            self._update_chebyshev_omega()
 
     def _sor_update(self, parity: int):
         """
