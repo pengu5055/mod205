@@ -28,7 +28,7 @@ if __name__ == "__main__":
     R    = 1.0
     H    = 2 * R
     flux = 1.0
-    Nr   = 100
+    Nr   = 101
     Nz   = 200
     dr   = R / (Nr - 1)
     dz   = H / (Nz - 1)
@@ -44,7 +44,8 @@ if __name__ == "__main__":
 }
 
     if rank == 0:
-        mask = make_cylinder_mask(Nr, Nz, bcs)
+        # mask = make_cylinder_mask(Nr, Nz, bcs)
+        mask = make_house_mask(Nr)
         mid = Nz // 2
         plt.figure(figsize=(4, 8))
         plt.imshow(mask, aspect='auto', cmap='gray', origin='upper')
