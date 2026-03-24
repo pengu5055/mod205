@@ -429,7 +429,7 @@ class SORChunk:
 
         # Neighbor lookup from topology
         if self.topology.ndim != 1:
-            self.chunks = self.topology.shape[0]
+            self.chunks = self.topology.shape[0]  # Only works with square chunk topologies otherwise need seperate rows/cols
             y, x = self.chunk_loc
             self.n_up    = self.topology[y - 1, x] if y > 0               else self.topology[-1, x]
             self.n_down  = self.topology[y + 1, x] if y < self.chunks - 1 else self.topology[0,  x]
@@ -676,3 +676,136 @@ class SORChunk:
             self.comm.send(self.state, dest=0, tag=100)
 
         return self.state, self.residuals
+
+class CylindricalSORLattice(SORLattice):
+    """
+    Subclass of SORLattice that is designed for axisymmetric cylindrical problems in (r,z) coordinates.
+    Grid convention:
+        axis=0 (rows): z, row=0 -> z=H (top), row=-1 -> z=0 (bottom)
+        axis=1 (cols): r, col=1 -> r=0 (axis), col=-2 -> r=R (outer boundary)
+        Ghost borders [0, :], [-1, :], [:, 0], [:, -1].
+        axis=1 modified to avoid r=0 singularity
+    """
+    def __init__(self, 
+                 comm: MPI.Comm,
+                 domain_mask: np.ndarray,
+                 dr: float,
+                 dz: float,
+                 R: float,
+                 H: float,
+                 flux: float,
+                 omega: float,
+                 chunks: int,
+                 tol: float = 1e-6,
+                 bcs: dict = None,
+                 verbose: bool = False) -> None:
+        """
+        Let parent handle theta arrays, topolog, log folder and set RHS = 0.0 for
+        Laplace's equation. dr is given as dx since theta computation needs a single grid spacing parameter.
+        """
+        super().__init__(comm, domain_mask, dr, rhs_value=0.0, 
+                         omega=omega, chunks=chunks, tol=tol, verbose=verbose)
+        
+        self.dr = dr
+        self.dz = dz
+        self.R = R
+        self.H = H
+        self.flux = flux
+        if bcs is None:
+            bcs = {
+                "top": "dirichlet",   # z=H: T=0
+                "bottom": "neumann",  # z=0: fixed flux dT/dz = -flux
+                "inner": "neumann",   # r=0: symmetry dT/dr = 0
+                "outer": "dirichlet"} # r=R: split T_cold/T_hot
+        self.bcs = bcs
+
+        Nz, Nr = self.full_shape
+
+        # Create physical coordinate arrays
+        r_coords_1d = np.linspace(0, R, Nr)
+        z_coords_1d = (np.linspace(0, H, Nz))[::-1]  # Reverse so z=0 at bottom row
+        self.r_coords, self.z_coords = np.meshgrid(r_coords_1d, z_coords_1d)
+
+        # Apply Dirichlet BCs to initial state where specified
+        if self.bcs["outer"] == "dirichlet":
+            outer_col = self.r_coords == R
+            top_half = self.z_coords >= H / 2
+            self.state[outer_col & top_half] = 1.0  # T_hot
+            self.state[outer_col & ~top_half] = 0.0  # T_cold 
+
+        if self.bcs["top"] == "dirichlet":
+            top_row = self.z_coords == H
+            self.state[top_row] = 0.0  # T=0 at top boundary (already implicitly set)
+
+        bcs_string = f"[bold green][Rank 0][/bold green] Cylindrical BCs applied. " + \
+                     f"bcs={bcs}, flux={flux}, R={R}, H={H}"
+        self.log(strip_rich(bcs_string))
+
+    def scatter(self) -> dict:
+        """
+        Extend parent scatter to include cylindrical-specific parameters and coordinate arrays.
+        """
+        Nz, Nr = self.full_shape
+        rank0_params = None
+
+        arrays_to_scatter = {
+            "state": self.state,
+            "domain_mask": self.domain_mask.astype(np.float64),
+            "RHS": self.RHS.astype(np.float64),
+            "theta_right": self.theta_right,
+            "theta_left": self.theta_left,
+            "theta_up": self.theta_up,
+            "theta_down": self.theta_down,
+            "r_coords": self.r_coords,
+            "z_coords": self.z_coords,
+        }
+
+        for target_rank in range(self.n_chunks):
+            r_start, r_end, c_start, c_end = self._get_chunk_slice(target_rank)
+            loc = np.where(self.topology == target_rank)
+            chunk_loc = (int(loc[0][0]), int(loc[1][0]))
+            chunk_row = int(loc[0][0])
+            chunk_col = int(loc[1][0])
+
+            # Determine which global BCs apply to this chunk based on its location in the topology
+            is_top = chunk_row == 0
+            is_bottom = chunk_row == self.chunks_shape[0] - 1
+            is_inner = chunk_col == 0
+            is_outer = chunk_col == self.chunks_shape[1] - 1
+
+            params = {
+                "chunk_loc": chunk_loc,
+                "topology": self.topology,
+                "dimensions": (self.chunk_x, self.chunk_y),
+                "omega": self.omega,
+                "tol": self.tol,
+                "dx": self.dr, # Use dr for theta computation
+                "dr": self.dr,
+                "dz": self.dz,
+                "flux": self.flux,
+                "bcs": self.bcs,
+                "is_top": is_top,
+                "is_bottom": is_bottom,
+                "is_inner": is_inner,
+                "is_outer": is_outer,
+                "MAX_ITER": self.MAX_ITER,
+                "log_folder": self.log_folder,
+            }
+
+            for name, full_arr in arrays_to_scatter.items():
+                if isinstance(full_arr, np.ndarray):
+                    chunk_arr = self._add_ghost_borders(full_arr, r_start, r_end, c_start, c_end)
+                    params[name] = chunk_arr
+                else:
+                    params[name] = full_arr  # Scalar parameters like MAX_ITER
+
+            # Fix mask back to bool after padding ghost borders
+            params["domain_mask"] = params["domain_mask"].astype(bool)
+
+            if target_rank == 0:
+                rank0_params = params
+            else:
+                self.comm.send(params, dest=target_rank, tag=99)
+
+        return rank0_params
+            
