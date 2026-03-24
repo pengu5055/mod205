@@ -77,43 +77,37 @@ def make_circle_mask(N: int, pad: int = 1) -> np.ndarray:
 
     return mask
 
-def make_cylinder_mask(Nr: int, Nz: int, bcs: dict, pad: int = 1) -> np.ndarray:
+def make_cylinder_mask(Nr: int, Nz: int, bcs: dict) -> np.ndarray:
     """
-    Build boolean domain mask for a cylinder meridional cross-section in (r, z).
-    Interior points are True. Boundary nodes are True if Neumann (updated by solver,
-    ghost enforces BC), False if Dirichlet (fixed value, never updated).
-
-    Parameters
-    ----------
-    Nr : int
-        Number of grid points in r direction (excluding pad).
-    Nz : int
-        Number of grid points in z direction (excluding pad).
-    bcs : dict
-        Boundary condition types for each edge:
-        {"top": "dirichlet"/"neumann", ...}
-    pad : int
-        Ghost layer width.
+    Build boolean domain mask for cylinder cross-section (r, z).
+    Shape is (Nz, Nr) — no ghost padding, that's added by _add_ghost_borders.
+    Boundary nodes: False if Dirichlet (fixed), True if Neumann (updated by solver).
+    Interior nodes: always True.
     """
-    total_rows = Nz + 2 * pad
-    total_cols = Nr + 2 * pad
+    mask = np.ones((Nz, Nr), dtype=bool)
 
-    # Start with all interior True
-    mask = np.zeros((total_rows, total_cols), dtype=bool)
-    mask[pad:-pad, pad:-pad] = True
-
-    # Set Dirichlet boundary nodes to False
+    # Top row (z=H, row 0)
     if bcs["top"] == "dirichlet":
-        mask[pad, pad:-pad] = False        # z=H top row
+        mask[0, :] = False
 
+    # Bottom row (z=0, row -1)
     if bcs["bottom"] == "dirichlet":
-        mask[-pad-1, pad:-pad] = False     # z=0 bottom row
+        mask[-1, :] = False
 
+    # Inner col (r=0, col 0)
     if bcs["inner"] == "dirichlet":
-        mask[pad:-pad, pad] = False        # r=0 axis col
+        mask[:, 0] = False
 
-    if bcs["outer"] == "dirichlet":
-        mask[pad:-pad, -pad-1] = False     # r=R outer col
+    # Outer col (r=R, col -1)
+    if isinstance(bcs["outer"], dict):
+        mid = Nz // 2
+        if bcs["outer"]["top_half"] == "dirichlet":
+            mask[:mid, -1] = False       # top half, low row indices
+        if bcs["outer"]["bottom_half"] == "dirichlet":
+            mask[mid:, -1] = False       # bottom half, high row indices
+    else:
+        if bcs["outer"] == "dirichlet":
+            mask[:, -1] = False
 
     return mask
 
@@ -762,29 +756,24 @@ class CylindricalSORLattice(SORLattice):
         Nz, Nr = self.full_shape
 
         # Create physical coordinate arrays
-        pad = 1
-
-        # Linspace over interior only, excluding the pad ring
-        r_coords_1d = np.linspace(0, R, Nr - 2 * pad)
-        z_coords_1d = np.linspace(0, H, Nz - 2 * pad)[::-1]
-        
-        # Embed in full_shape array with zeros in pad ring
-        r_full = np.zeros((Nz, Nr))
-        z_full = np.zeros((Nz, Nr))
-        
-        r_mesh, z_mesh = np.meshgrid(r_coords_1d, z_coords_1d)
-        r_full[pad:-pad, pad:-pad] = r_mesh
-        z_full[pad:-pad, pad:-pad] = z_mesh
-        
-        self.r_coords = r_full
-        self.z_coords = z_full
+        Nz, Nr = self.full_shape   # now (Nz, Nr) directly, no pad
+        r_coords_1d = np.linspace(0, R, Nr)
+        z_coords_1d = np.linspace(0, H, Nz)[::-1]
+        self.r_coords, self.z_coords = np.meshgrid(r_coords_1d, z_coords_1d)
 
         # Apply Dirichlet BCs to initial state where specified
-        if self.bcs["outer"] == "dirichlet":
-            outer_col = self.r_coords == R
-            top_half = self.z_coords >= H / 2
-            self.state[outer_col & top_half] = 1.0  # T_hot
-            self.state[outer_col & ~top_half] = 0.0  # T_cold 
+        outer_col = np.abs(self.r_coords - R) < dr * 0.5
+        if isinstance(self.bcs["outer"], dict):
+            top_half  = self.z_coords >= H / 2
+            if self.bcs["outer"]["top_half"] == "dirichlet":
+                self.state[outer_col & top_half]  = 1.0
+            if self.bcs["outer"]["bottom_half"] == "dirichlet":
+                self.state[outer_col & ~top_half] = 0.0   # explicit, already zero
+        else:
+            if self.bcs["outer"] == "dirichlet":
+                top_half = self.z_coords >= H / 2
+                self.state[outer_col & top_half]  = 1.0
+                self.state[outer_col & ~top_half] = 0.0 
 
         if self.bcs["top"] == "dirichlet":
             top_row = self.z_coords == H
@@ -844,6 +833,8 @@ class CylindricalSORLattice(SORLattice):
                 "is_outer": is_outer,
                 "MAX_ITER": self.MAX_ITER,
                 "log_folder": self.log_folder,
+                "R": self.R,
+                "H": self.H,
             }
 
             for name, full_arr in arrays_to_scatter.items():
@@ -896,6 +887,8 @@ class CylindricalSORChunk(SORChunk):
         self.is_bottom = params['is_bottom']
         self.is_inner  = params['is_inner']
         self.is_outer  = params['is_outer']
+        self.H         = params['H']
+        self.R         = params['R']
 
     def _sor_update(self, parity: int):
         """
@@ -969,6 +962,11 @@ class CylindricalSORChunk(SORChunk):
                 self.state[0, :] = self.state[2, :]
             elif self.bcs["top"] == "dirichlet":
                 self.state[0, :] = -self.state[2, :]
+        
+        if self.is_outer and isinstance(self.bcs["outer"], dict):
+            if self.bcs["outer"]["top_half"] == "neumann":
+                top_half_rows = self.z_coords[:, -2] >= self.H / 2
+                self.state[top_half_rows, -1] = self.state[top_half_rows, -3]
 
     def _sor_step(self):
         """

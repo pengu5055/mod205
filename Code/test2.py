@@ -32,19 +32,25 @@ if __name__ == "__main__":
     Nz   = 200
     dr   = R / (Nr - 1)
     dz   = H / (Nz - 1)
-    pad  = 1
 
     bcs = {
-        "top":    "neumann",
+        "top":    "dirichlet",
         "bottom": "neumann",
         "inner":  "neumann",
-        "outer":  "dirichlet",
-    }
+        "outer": {
+            "bottom_half": "dirichlet",
+            "top_half":    "dirichlet",
+        }
+}
 
     if rank == 0:
-        mask = make_cylinder_mask(Nr, Nz, bcs, pad=pad)
-        print(f"top boundary row (row 1) mask: {mask[1, :].sum()}")
-        print(f"top boundary row (row 1) mask neumann case: {mask[1, :].sum()}")
+        mask = make_cylinder_mask(Nr, Nz, bcs)
+        mid = Nz // 2
+        plt.figure(figsize=(4, 8))
+        plt.imshow(mask, aspect='auto', cmap='gray', origin='upper')
+        plt.title("Domain mask")
+        plt.colorbar()
+        plt.savefig("./Images/mask_check.png", dpi=150)
         lattice = CylindricalSORLattice(
             comm=comm,
             domain_mask=mask,
@@ -79,7 +85,7 @@ if __name__ == "__main__":
         # Plotting
         fig, ax = plt.subplots()
         norm = mpl.colors.Normalize(vmin=T_plot.min()+1e-6, vmax=T_plot.max())
-        im = ax.imshow(T_plot.T, origin="lower", extent=[r_plot.min(), r_plot.max(), z_plot.min(), z_plot.max()], aspect="auto", cmap=cmr.ember, norm=norm)
+        im = ax.imshow(T_plot, origin="upper", extent=[r_plot.min(), r_plot.max(), z_plot.min(), z_plot.max()], aspect="auto", cmap=cmr.ember, norm=norm)
         cbar = fig.colorbar(im, ax=ax)
         cbar.set_label("Temperature")
         ax.set_xlabel("r")
