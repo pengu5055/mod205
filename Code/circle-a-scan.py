@@ -23,7 +23,7 @@ if __name__ == "__main__":
     rank = comm.Get_rank()
     size = comm.Get_size()
 
-    fn = f"./Data/circle_scan_a{a0}-{a1}_g{num_points}_size{size}_N{N}.h5"
+    fn = f"./Data/circle_scan_a{a0}_g{num_points}_size{size}_N{N}.h5"
 
     # Set up scan parameters
     PLACEHOLDER = 1.0
@@ -35,7 +35,7 @@ if __name__ == "__main__":
         
         mask = make_circle_mask(N, pad=pad)
         lattice = SORLattice(comm=comm, domain_mask=mask, dx=1/N, rhs_value=-1.0, omega=PLACEHOLDER, chunks=int(np.sqrt(size)), verbose=True)
-        lattice.MAX_ITER = 50000
+        lattice.MAX_ITER = 100000
 
     for i, a in enumerate(alpha):
         if rank == 0:
@@ -49,6 +49,7 @@ if __name__ == "__main__":
         chunk = SORChunk(comm, params, verbose=True)
         chunk.bar = False
         chunk.run()
+        chunk.log.info(f"Took {time() - ts:.2f} seconds for alpha={a:.3f}")
 
         if rank == 0:
             C = lattice.poiseuille_coeff(chunk.state)

@@ -15,7 +15,7 @@ Latex/*
 *.h5
 !*_n.h5
 *.zip
-
+Logs/
 !Data/Backups/
 !Data/Backups/*
 !Data/Backups/*.npz

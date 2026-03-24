@@ -8,6 +8,10 @@ from mpi4py import MPI
 from rich import print as print
 from rich.progress import Progress
 from skimage.measure import find_contours
+import os
+import datetime
+import logging
+import re
 import h5py as h5
 import hdf5plugin
 
@@ -73,6 +77,9 @@ def make_circle_mask(N: int, pad: int = 1) -> np.ndarray:
 
     return mask
 
+def strip_rich(text):
+    return re.sub(r'\[.*?\]', '', text)
+
 class SORLattice:
     """
     Class for root rank to instantiate the full SOR grid and partition it into chunks for each rank.
@@ -136,6 +143,10 @@ class SORLattice:
 
         # Solution field. Zero all since BC's are enforced via masking
         self.state = np.zeros_like(self.domain_mask_full, dtype=np.float64)
+
+        # Create log folder for this run
+        self.log_folder = f"./Logs/run_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        os.makedirs(self.log_folder, exist_ok=True)
 
     def _compute_theta_arrays(self, dx: float):
         """
@@ -296,6 +307,7 @@ class SORLattice:
             "theta_up": self.theta_up,
             "theta_down": self.theta_down,
             "MAX_ITER": self.MAX_ITER,
+            "log_folder": self.log_folder,
         }
 
         rank0_params = None
@@ -411,6 +423,7 @@ class SORChunk:
         self.iter      = 0
         self.residuals = []
         self.verbose   = verbose
+        self.log_folder = params["log_folder"]
         self.very_verbose = False  # Internal flag for extra debug prints during communication steps
         self.bar = False
 
@@ -441,12 +454,21 @@ class SORChunk:
         self.RHS           = params['RHS']
 
         # GHOST HALO INCLUDED HERE 
-        self.x_dim, self.y_dim = self.state.shape  
+        self.x_dim, self.y_dim = self.state.shape
+
+        # Instantiate log file for this chunk
+        logging.basicConfig(filename=os.path.join(self.log_folder, f"rank_{self.rank}.log"), 
+                            level=logging.INFO, format='%(asctime)s - %(message)s')
+        self.log = logging.getLogger(f"Rank {self.rank}")
+
+        ready_string = f"[bold green][Rank {self.rank}][/bold green] Ready! " + \
+                       f"loc={self.chunk_loc} neighbors=({self.n_up},{self.n_down},{self.n_left},{self.n_right}) " + \
+                       f"shape={self.state.shape}"
 
         if self.verbose:
-            print(f"[bold green][Rank {self.rank}][/bold green] Ready! "
-                  f"loc={self.chunk_loc} neighbors=({self.n_up},{self.n_down},{self.n_left},{self.n_right}) "
-                  f"shape={self.state.shape}")
+            print(ready_string)
+
+        self.log.info(strip_rich(ready_string))
 
     def _broadcast_borders(self):
         """
@@ -623,20 +645,28 @@ class SORChunk:
             self.residuals.append(residual)
             self.iter += 1
 
-            if self.iter % 100 == 0 and self.rank == 0:
-                print(f"[bold green][Rank {self.rank}][/bold green] Iter {self.iter}, Residual {residual:.2e}")
+            
+            if self.iter % 100 == 0:
+                status_string = f"[bold green][Rank {self.rank}][/bold green] Iter: {self.iter}, Residual: {residual:.2e}"
+                self.log.info(strip_rich(status_string))
+                if self.rank == 0 and self.very_verbose:
+                    print(status_string)
             
             if residual < self.tol:
                 if self.rank == 0:
-                    print(f"[bold green][Rank 0][/bold green] Converged at iteration {self.iter}, residual {residual:.2e}")
+                    convg_string = f"[bold green][Rank 0][/bold green] Converged at iteration {self.iter}, residual {residual:.2e}"
+                    print(convg_string)
+                    self.log.info(strip_rich(convg_string))
                 break
         
         # Wait for all ranks to finish
         self.comm.Barrier()
         
         if self.verbose and self.rank == 0:
-            print(f"[bold green][Rank {self.rank}][/bold green] Simulation Complete. " +  
-                  f"Total Iterations: {self.iter}, Final Residual: {self.residuals[-1]:.2e}")
+            done_string = f"[bold green][Rank 0][/bold green] Simulation Complete. " + \
+                          f"Total Iterations: {self.iter}, Final Residual: {self.residuals[-1]:.2e}"
+            print(done_string)
+            self.log.info(strip_rich(done_string))
         
         # Truncate state to original dimensions (remove ghost rows and columns)
         self.state = np.ascontiguousarray(self.state[1:-1, 1:-1])
