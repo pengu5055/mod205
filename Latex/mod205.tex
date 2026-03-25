@@ -378,7 +378,7 @@ are not very useful for finding the optimal $\alpha$ since they are too coarse, 
 
 We can clearly see that there exists an optimal $\omega$ (and thus $\alpha$) for which the number of iterations required for convergence is minimized, however since our scan was wide and 
 coarse we cannot determine the exact value from this plot. \Cref{fig:circle-scan-zoom} shows a zoomed in version of the scan around the optimal $\alpha$, where we can read 
-that the optimal $\omega$ is around $1.985$, which for $N=404$ corresponds to $\alpha \approx 0.98$, which is the same optimal $\omega$ as for the square case, and is again very close 
+that the optimal $\omega$ is around $1.985$, which for $N=418$ corresponds to $\alpha \approx 0.98$, which is the same optimal $\omega$ as for the square case, and is again very close 
 to the optimal value of $\alpha=1.0$ that we would get from \Cref{eq:omega-opt}. This a sensible result if we consider that the optimal $\omega$ is determined by the spectral radius of the iteration matrix.
 The spectral radius is determined by the largest eigenvalue of the iteration matrix, which is tied to the \textit{characteristic length} of the domain, \textbf{not} its shape. 
 Since the characteristic length of the circular pipe is its radius, which is the same as the side length of the square domain, it makes sense that the optimal $\omega$ is the same for both cases.  
@@ -405,8 +405,9 @@ that they are easier to compare.
     \label{fig:mask-steady-state}
 \end{figure}
 
-The results are exactly as we expected them to be. The velocity profile for the square domain is the classic parabolic profile, while the velocity profile for the circular domain is the classic \textit{Hagen-Poiseuille} profile
-\cite{LANDAU198744}, which is also parabolic, but with a different curvature. The velocity profile for the house-shaped domain is more complex, but it still has shapes that seem sensible. The widest part of the domain, where the 
+The results are exactly as we expected them to be. The velocity profile for the square domain is the Fourier series solution, which essentially gives a smooth bell-shaped profile that flattens out near the boundaries, which 
+we can see we have successfully reproduced with our solver. The velocity profile for the circular domain is the classic \textit{Hagen-Poiseuille} profile, which is also parabolic, but with a different curvature. 
+The velocity profile for the house-shaped domain is more complex, but it still has shapes that seem sensible. The widest part of the domain, where the 
 base of the house intersects with the outcrop of a \textit{'plus'} shape, has the highest velocity, while the narrowest parts of the domain, the corners of said outcrops, have the lowest velocity. 
 This plot was computed using Chebyshev acceleration where the square approximation for the optimal $\omega$ was used to compute the spectral radius $\rho_\text{jac}$. We will more thoroughly examine the effect 
 of Chebyshev acceleration shortly. \\
@@ -426,14 +427,83 @@ We can read from the right-hand plot that the optimal $\omega$ is around $1.977$
 that the house-shaped domain has a larger characteristic length along the diagonal. The computed Poisseuille coefficient at the optimal $\alpha$ is $C^{(\text{num})}_{\text{house}} = 0.0131$.
 The computed Poisseuille coefficient is sensibly lower than the square and circular cases, which is expected since the house-shaped domain has a more complex geometry with narrow outcrops that should lead to higher resistance to flow. \\
 
-Something I neglected to comment on earlier are the sequences of residuals for values of $\alpha$ what approch the stability limit of $\omega=2.0$. \Cref{fig:square-scan} showed clearly that 
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.65\textwidth]{../Images/house_optimal_comparison.pdf}
+    \caption{Comparison of the convergence of the residuals for the house-shaped domain without Chebyshev acceleration, with Chebyshev acceleration using the square approximation for $\rho_\text{jac}$, and with 
+    Chebyshev acceleration using the optimal $\rho_\text{jac}$ obtained from the optimal $\alpha$ via \Cref{eq:omega-rho}.}
+    \label{fig:chebyshev}
+\end{figure}
+
+Something I neglected to comment on earlier are the sequences of residuals for values of $\alpha$ that approach the stability limit of $\omega=2.0$. \Cref{fig:square-scan} showed clearly that 
 we can expect divergent behavior for $\alpha=0.0$ (i.e. $\omega=2.0$) however, \Cref{fig:house-scan-zoom} allows us to better see how residuals start to oscillate and take longer and longer 
 to properly converge as we approach the stability limit. This is a well known behavior of the SOR method, and it is one of the reasons 
 why it is important to find the optimal $\omega$ for convergence. I'm sure a more detailed analysis of the spectral radius of the iteration matrix could give us a more precise estimate of the optimal $\omega$ for the house-shaped domain, but I 
-think that the results we have are already quite good, and they are in line with our expectations based on the theoretical predictions. 
+think that the results we have are already quite good, and they are in line with our expectations based on the theoretical predictions. \\
 
+Lastly for this subsection, \Cref{fig:chebyshev} shows the convergence of the residuals for the house-shaped domain without Chebyshev acceleration, with Chebyshev acceleration using the square approximation for $\rho_\text{jac}$, and with 
+Chebyshev acceleration using the optimal $\rho_\text{jac}$ obtained from the optimal $\alpha$ via \Cref{eq:omega-rho}. Oddly enough, the Chebyshev acceleration with the optimal $\rho_\text{jac}$ seems to perform worse than the one
+with the square approximation for $\rho_\text{jac}$. Even more oddly is the fact that the Chebyshev acceleration with the optimal $\rho_\text{jac}$ seems to perform worse than the standard SOR method without Chebyshev acceleration but 
+at the optimal $\omega$. When thinking about this result, we can remind ourselves that the Chebyshev acceleration is designed to asymptotically approach the optimal $\omega$ in the course of the half-iteration steps, hence a 
+more aggressive ($\rho_\text{jac}$ closer to $1$) is the one that gets us closer to the optimal $\omega$ faster, which is likely why the square approximation for $\rho_\text{jac}$ performs better than the numerically obtained optimal $\rho_\text{jac}$.
+So my guess is that the slight underestimation of $\rho_\text{jac}$ by the square approximation is actually beneficial and produces a more aggressive Chebyshev acceleration that gets us closer to the optimal $\omega$ faster.
+
+
+\subsection{Steady-State Temperature Distribution in a Cylinder}
+The results for the steady-state temperature distribution in the cylinder are shown in \Cref{fig:cylinder-temperature}. The left-hand plot shows the temperature distribution for the case with Dirichlet boundary conditions at the upper half of the cylinder, 
+while the right-hand plot shows the temperature distribution for the case with Neumann boundary conditions at the upper half of the cylinder. The results are exactly as we would expect them to be really, which is of course reassuring to see.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=\textwidth]{../Images/cylinder_solutions.pdf}
+    \caption{Steady-state temperature distribution in the cylinder for the case with Dirichlet boundary conditions at the upper half of the cylinder (left) and for the case with Neumann boundary conditions at the upper half of the cylinder (right).}
+    \label{fig:cylinder-temperature}
+\end{figure}
+
+I don't think I have too much to say about these results, since they are quite straightforward, since and they match our expectations based on the boundary conditions. I'm happy with the 
+results and even more happy that I was able to generalize the SOR method to cylindrical coordinates while retaining all MPI parallelization features.
+
+\Cref{fig:case1-convergence} and \Cref{fig:case2-convergence} show the convergence of the residuals for the two cases. We can see that the change of boundary conditions, while meaningfully changing the solution, does not change the 
+optimal $\omega$ for convergence, which is again sensible since the optimal $\omega$ is from the domain not the boundary conditions. Other than that, no undiscussed behavior is observed here.
+The plots for iterations required for convergence are very neat though. The optimal value sits again around $\alpha \approx 1.5$, which given the rectangular shape of the domain is 
+also sane. 
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.9\textwidth]{../Images/task2_dirichlet.pdf}
+    \caption{Convergence of the residuals for the case with Dirichlet boundary conditions at the upper half of the cylinder.}
+    \label{fig:case1-convergence}
+\end{figure}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.9\textwidth]{../Images/task2_neumann.pdf}
+    \caption{Convergence of the residuals for the case with Neumann boundary conditions at the upper half of the cylinder.}
+    \label{fig:case2-convergence}
+\end{figure}
 
 \section{Conclusion and Comments}
+During the course of this report I think I was very scatter-brained, due to external \textit{'life'} factors. I hope I still did a decent job of visualization and explanation of 
+the results. I also hope that my mentions of technical details are not too overwhelming while not being too sparse. Something that would perhaps warrant a study or a plot would be 
+how discretization errors affect the computed Poisseuille coefficient. I'm sure some of my colleagues will have plots to that tune. Since what we're doing is essentially 
+a finite difference adjacent method we can expect the error to be of order $\mathcal{O}(\Delta x^2)$, but it would be nice to see that in practice. In my case I assumed that I had 
+sufficiently high resolution for the error to be negligible, as also confirmed by the fact that the computed Poisseuille coefficients for the square and circular domains are very close to the analytical values. \\
+
+To conclude, I want to add an additional pipe cross-section to the report that did not seem to fit well elsewhere. I want to prepend a disclaimer that 
+this plot is \emph{\textbf{in no way meant to be offensive}} to anyone, most of all our advisor/mentor whose likeness I used as the additional domain cross-section. 
+The results for convergence and steady-flow velocity profile for the \textit{'mentor'}-shaped domain are shown in \Cref{fig:miha-scan}. 
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.9\textwidth]{../Images/mm_a_scan.pdf}
+    \caption{Convergence and steady-flow velocity profile for the \textit{'mentor'}-shaped domain.}
+    \label{fig:miha-scan}
+\end{figure}
+
+I think this is a fascinating result and would warrant way more discussion especially for other shapes. We see the velocity profile seems sensible, with the highest velocity 
+in the widest part of the domain. The solver also does a decent job of converging to the solution even in very narrow areas of the domain, which is quite impressive. There definitely is 
+room for improvement in very narrow areas, like the ears, but I think the results are already quite good. Besides a fun addition to the report, I wanted to include this plot to showcase 
+the robustness and generality of the MPI parallelized SOR solver that I conjured up, which seems to be happy to handle arbitrary shapes without any issues.
 
 % Add references
 \newpage
