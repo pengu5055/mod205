@@ -395,6 +395,42 @@ for $\alpha\in[0.05, 2]$ we can see that the computed Poisseuille coefficient is
 With that I hope we've built a compelling case for the correctness of our implementation, and we can now move on to the main task of computing the velocity profile and Poisseuille coefficient for the house-shaped domain.
 
 \section{Results}
+\Cref{fig:mask-steady-state} shows the domain masks and the steady-state velocity profiles for the square, circular, and house-shaped domains. The velocity profiles are normalized by the maximum velocity in the domain, such 
+that they are easier to compare.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=\textwidth]{../Images/mask_solutions2.pdf}
+    \caption{Domain masks and steady-state velocity profiles for the square, circular, and house-shaped domains. The velocity profiles are normalized by the maximum velocity in the domain.}
+    \label{fig:mask-steady-state}
+\end{figure}
+
+The results are exactly as we expected them to be. The velocity profile for the square domain is the classic parabolic profile, while the velocity profile for the circular domain is the classic \textit{Hagen-Poiseuille} profile
+\cite{LANDAU198744}, which is also parabolic, but with a different curvature. The velocity profile for the house-shaped domain is more complex, but it still has shapes that seem sensible. The widest part of the domain, where the 
+base of the house intersects with the outcrop of a \textit{'plus'} shape, has the highest velocity, while the narrowest parts of the domain, the corners of said outcrops, have the lowest velocity. 
+This plot was computed using Chebyshev acceleration where the square approximation for the optimal $\omega$ was used to compute the spectral radius $\rho_\text{jac}$. We will more thoroughly examine the effect 
+of Chebyshev acceleration shortly. \\
+
+\Cref{fig:house-scan} shows the wide and coarse scan over $\alpha$ for the house-shaped domain. Since this view is less useful for determining the optimal $\alpha$ it has been 
+included in the Appendix, while the zoomed in version in \Cref{fig:house-scan-zoom} is shown here.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.9\textwidth]{../Images/house_scan_results_zoom.pdf}
+    \caption{Zoomed in scan over $\alpha$ for the house-shaped domain. The left-hand plot shows the convergence of the residuals for different values of $\alpha$, while the 
+    right-hand plot shows the number of iterations required for convergence and the computed Poisseuille coefficient for each value of $\alpha$.}
+    \label{fig:house-scan-zoom}
+\end{figure}
+
+We can read from the right-hand plot that the optimal $\omega$ is around $1.977$, which for $N=404$ corresponds to $\alpha \approx 1.5$, which is somewhat higher than the square and circular cases, but is also sensible if we consider 
+that the house-shaped domain has a larger characteristic length along the diagonal. The computed Poisseuille coefficient at the optimal $\alpha$ is $C^{(\text{num})}_{\text{house}} = 0.0131$.
+The computed Poisseuille coefficient is sensibly lower than the square and circular cases, which is expected since the house-shaped domain has a more complex geometry with narrow outcrops that should lead to higher resistance to flow. \\
+
+Something I neglected to comment on earlier are the sequences of residuals for values of $\alpha$ what approch the stability limit of $\omega=2.0$. \Cref{fig:square-scan} showed clearly that 
+we can expect divergent behavior for $\alpha=0.0$ (i.e. $\omega=2.0$) however, \Cref{fig:house-scan-zoom} allows us to better see how residuals start to oscillate and take longer and longer 
+to properly converge as we approach the stability limit. This is a well known behavior of the SOR method, and it is one of the reasons 
+why it is important to find the optimal $\omega$ for convergence. I'm sure a more detailed analysis of the spectral radius of the iteration matrix could give us a more precise estimate of the optimal $\omega$ for the house-shaped domain, but I 
+think that the results we have are already quite good, and they are in line with our expectations based on the theoretical predictions. 
 
 
 \section{Conclusion and Comments}
@@ -402,6 +438,18 @@ With that I hope we've built a compelling case for the correctness of our implem
 % Add references
 \newpage
 \printbibliography
+\newpage
+
+\appendix
+\section{Additional Plots}  
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.9\textwidth]{../Images/house_scan_results.pdf}
+    \caption{Wide and coarse scan over $\alpha$ for the house-shaped domain. The left-hand plot shows the convergence of the residuals for different values of $\alpha$, while the 
+    right-hand plot shows the number of iterations required for convergence and the computed Poisseuille coefficient for each value of $\alpha$. Plot primarily included for completeness, since it is not very useful for determining the optimal $\alpha$.}
+    \label{fig:house-scan}
+\end{figure}
+
 
 % End document
 \end{document}
