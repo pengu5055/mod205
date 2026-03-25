@@ -20,10 +20,15 @@ omega_values = np.array([res["omega"] for res in results])
 iters = np.array([res["iter"] for res in results])
 Cs = np.array([res["C"] for res in results])
 
+data = np.load("goofy-test.npz")
+state = data["state"]
+mask = data["mask"]
+residuals = data["residuals"]
+C = data["poiseuille_coeff"]
+
 print("iterations:", iters)
 
-fig, ax = plt.subplots(1, 1, figsize=(8, 6))
-ax = [ax]  # Make it iterable for consistency with other plots
+fig, ax = plt.subplots(1, 2, figsize=(12, 6))
 
 colors = cmr.take_cmap_colors("cmr.tropical", len(results), cmap_range=(0.0, 0.8))
 cm = cmr.get_sub_cmap("cmr.tropical", 0.0, 0.8)
@@ -43,6 +48,19 @@ ax[0].set_yscale("log")
 ax[0].set_xlabel("Iteration")
 ax[0].set_ylabel("Residual")
 ax[0].set_title("Convergence of Residuals")
+
+cm = cmr.get_sub_cmap("cmr.chroma", 0.15, 0.75)
+cm.set_bad(color="lightgray", alpha=0.0)
+state /= np.max(state[mask])
+state[state < 0.01] = np.nan
+
+norm = mpl.colors.LogNorm(vmin=0.01, vmax=np.nanmax(state[mask]))
+im = ax[1].imshow(state, cmap=cm, norm=norm, zorder=4)
+ax[1].imshow(mask, cmap="gray", alpha=1.0, zorder=3)
+ax[1].set_title(f"Steady-State Solution (C={C:.4f})")
+fig.colorbar(im, ax=ax[1], label="Normalized Velocity")
+ax[1].grid(False)
+ax[1].axis("off")
 
 plt.suptitle("SOR Convergence for Pipe with Mentor Profile")
 plt.tight_layout()
