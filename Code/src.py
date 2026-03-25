@@ -114,6 +114,23 @@ def make_cylinder_mask(Nr: int, Nz: int, bcs: dict) -> np.ndarray:
 def strip_rich(text):
     return re.sub(r'\[.*?\]', '', text)
 
+def load_scan(fn):
+    results = []
+    with h5.File(fn, "r") as f:
+        for key in sorted(f.keys()):
+            g = f[key]
+            results.append({
+                "alpha":    g.attrs["alpha"],
+                "omega":    g.attrs["omega"],
+                "C":        g.attrs["poiseuille_coeff"],
+                "iter":     g.attrs["iter"],
+                "residuals": g["residuals"][:],
+                "state":   g["state"][:]
+            })
+
+    results.sort(key=lambda x: x["alpha"])
+    return results
+
 class SORLattice:
     """
     Class for root rank to instantiate the full SOR grid and partition it into chunks for each rank.

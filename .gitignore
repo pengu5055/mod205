@@ -12,8 +12,8 @@ Latex/*
 !Latex/*.pdf
 !Latex/*.png
 !Latex/arch/
-*.h5
-!*_n.h5
+# *.h5
+# !*_n.h5
 *.zip
 Logs/
 !Data/Backups/

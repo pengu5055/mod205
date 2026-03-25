@@ -72,7 +72,7 @@ if __name__ == "__main__":
                 group.attrs["omega"] = omega_ansatz(a, N)
                 group.attrs["poiseuille_coeff"] = C
                 group.attrs["iter"] = chunk.iter
-                group.create_dataset("state", data=chunk.state,
+                group.create_dataset("state", data=lattice.state,
                                      compression=hdf5plugin.Blosc2("zstd", clevel=3, filters=hdf5plugin.Blosc2.SHUFFLE))
                 group.create_dataset("residuals", data=chunk.residuals,
                                      compression=hdf5plugin.Blosc2("zstd", clevel=3, filters=hdf5plugin.Blosc2.SHUFFLE))
