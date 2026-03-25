@@ -25,6 +25,12 @@ omega_values = np.array([res["omega"] for res in results])
 iters = np.array([res["iter"] for res in results])
 Cs = np.array([res["C"] for res in results])
 
+# Find the optimal alpha and corresponding omega
+optimal_idx = np.argmin(iters)
+optimal_alpha = alpha_values[optimal_idx]
+optimal_omega = omega_values[optimal_idx]
+print(f"Optimal alpha: {optimal_alpha:.8f}, Optimal omega: {optimal_omega:.8f}, Iterations: {iters[optimal_idx]}, C: {Cs[optimal_idx]:.8f}")
+
 
 fig, ax = plt.subplots(1, 2, figsize=(12, 6))
 

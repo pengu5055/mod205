@@ -131,6 +131,27 @@ def load_scan(fn):
     results.sort(key=lambda x: x["alpha"])
     return results
 
+def omega_2_jacobi(omega):
+    """
+    Convert SOR relaxation factor omega to equivalent Jacobi spectral radius rho
+    according to:
+    omega = 2 / (1 + sqrt(1 - rho^2))
+    """
+    if omega <= 0 or omega >= 2:
+        raise ValueError("Omega must be in the range (0, 2) for convergence.")
+    rho = np.sqrt(1 - (2 / omega - 1)**2)
+    return rho
+
+def sf2tex(f, precision=2):
+    """
+    Convert scientific float to LaTeX format.
+    Result is not embedded in math mode!
+    """
+    s = f"{f:.{precision}e}"
+    base, exponent = s.split("e")
+    exponent = int(exponent)
+    return f"{base} \\cdot 10^{{{exponent}}}"
+
 class SORLattice:
     """
     Class for root rank to instantiate the full SOR grid and partition it into chunks for each rank.
