@@ -49,7 +49,8 @@ ax[0].set_title("Convergence of Residuals")
 for i, res in enumerate(results):
     omega = res["omega"]
     it = res["iter"]
-    ax[1].scatter(omega, it, color=colors[i], s=25, edgecolor="k", lw=0.25)
+    ax[1].scatter(omega, it, color=colors[i], s=25, edgecolor="k", lw=0.1)
+    print(f"Omega: {omega:.4f}, Iterations: {it}, C: {Cs[i]:.8f}")
 
 norm = mpl.colors.Normalize(vmin=Cs.min(), vmax=Cs.max())
 sm = plt.cm.ScalarMappable(cmap=cm, norm=norm)
