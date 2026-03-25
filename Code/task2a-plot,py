@@ -1,0 +1,93 @@
+"""
+Plot results from circle-scan.
+"""
+import h5py as h5
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib as mpl
+import cmasher as cmr
+from src import *
+
+mpl.style.use("./vrm.mplstyle")
+mpl.use("tkagg")
+# Problem parameters
+R    = 1.0
+H    = 2 * R
+flux = 1.0
+Nr   = 101
+Nz   = 200
+dr   = R / (Nr - 1)
+dz   = H / (Nz - 1)
+a0   = 0.05
+num_points = 100
+
+bcs = {
+        "top":    "dirichlet",
+        "bottom": "neumann",
+        "inner":  "neumann",
+        "outer": {
+            "bottom_half": "dirichlet",
+            "top_half":    "dirichlet",
+        }
+      }
+
+omega_ansatz = lambda alpha, N: 2 / (1 + (np.pi * alpha / N))
+size = 1
+fn = f"./Data/task2_a{a0}_g{num_points}_size{size}_Nr{Nr}_th-bc{bcs['outer']['top_half']}.h5"
+
+
+with h5.File(fn, "r") as f:
+        results = []
+        for key in sorted(f.keys()):
+            g = f[key]
+            results.append({
+                "alpha":    g.attrs["alpha"],
+                "omega":    g.attrs["omega"],
+                "iter":     g.attrs["iter"],
+                "residuals": g["residuals"][:],
+                "state":   g["state"][:]
+            })
+
+results.sort(key=lambda x: x["alpha"])
+alpha_values = np.array([res["alpha"] for res in results])
+omega_values = np.array([res["omega"] for res in results])
+iters = np.array([res["iter"] for res in results])
+residuals_list = [res["residuals"] for res in results]
+        
+
+fig, ax = plt.subplots(1, 2, figsize=(12, 6))
+colors = cmr.take_cmap_colors("cmr.tropical", len(alpha_values), cmap_range=(0.0, 0.8))
+cm = cmr.get_sub_cmap("cmr.tropical", 0.0, 0.8)
+cm_r = cmr.get_sub_cmap("cmr.tropical_r", 0.2, 1.0)
+for i, alpha in enumerate(alpha_values):
+    omega = omega_values[i]
+    residuals = residuals_list[i]
+    it = iters[i]
+    ax[0].plot(residuals, lw=2, color=colors[i], label=f"$\\alpha={alpha:.2f}$") 
+
+norm = mpl.colors.Normalize(vmin=omega_ansatz(np.min(alpha_values), Nr), vmax=omega_ansatz(np.max(alpha_values), Nr))
+sm = plt.cm.ScalarMappable(cmap=cm_r, norm=norm)
+cbar = plt.colorbar(sm, ax=ax[0])
+cbar.set_label(r"$\omega$") 
+ax[0].set_yscale("log")
+ax[0].set_xlabel("Iteration")
+ax[0].set_ylabel("Residual")
+ax[0].set_title("Convergence of Residuals")
+
+final_residuals = np.array([res[-1] for res in residuals_list])
+norm = mpl.colors.Normalize(vmin=final_residuals.min(), vmax=final_residuals.max())
+sc = ax[1].scatter(omega_values, iters, c=final_residuals, cmap=cm, s=25, edgecolor="k", lw=0.1, norm=norm)
+cbar = plt.colorbar(sc, ax=ax[1])
+cbar.set_label("Final Residual")
+ax[1].set_xlabel(r"$\omega$")
+ax[1].set_ylabel("Iterations to Convergence")
+ax[1].set_yscale("log")
+ax[1].set_title("Iterations to Convergence")
+
+plt.suptitle("Cylindrical SOR Convergence for Dirichlet Upper Boundary Condition")
+plt.tight_layout()
+plt.subplots_adjust(top=0.82)
+parstr = f"Evaluated with: $N={Nr}$, $\\alpha_0 = {alpha_values.min():.2f}$, $\\alpha_1 = {alpha_values.max():.2f}$, $N_{{\\alpha}} = {len(alpha_values)}$ on {size} Chunks/MPI Ranks"
+plt.figtext(0.5, 0.92, parstr, ha='center', va='center', transform=plt.gcf().transFigure, fontsize=12, weight="medium")
+plt.savefig("./Images/task2_dirichlet.pdf", dpi=450)
+plt.show()
