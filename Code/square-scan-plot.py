@@ -47,7 +47,10 @@ ax[0].set_xlabel("Iteration")
 ax[0].set_ylabel("Residual")
 ax[0].set_title("Convergence of Residuals")
 
-sc = ax[1].scatter(omega_values, iters, c=Cs, cmap=cm, s=25, edgecolor="k", lw=0.1, norm=mpl.colors.Normalize(vmin=Cs.min(), vmax=Cs.max()))
+sc = ax[1].scatter(omega_values[1:], iters[1:], c=Cs[1:], cmap=cm, s=25, edgecolor="k", lw=0.1, norm=mpl.colors.LogNorm(vmin=Cs[1:].min(), vmax=Cs[1:].max()))
+# Plot last point as cross to indicate non-convergence
+ax[1].scatter(omega_values[0], iters[0], marker='X', s=100, color="red", edgecolor="k", lw=0.5, label="Does not converge")
+ax[1].legend(loc="upper left")
 cbar = plt.colorbar(sc, ax=ax[1])
 cbar.set_label("Poiseuille Coefficient $C$")
 
