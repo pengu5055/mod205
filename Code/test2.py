@@ -39,14 +39,12 @@ if __name__ == "__main__":
         "inner":  "neumann",
         "outer": {
             "bottom_half": "dirichlet",
-            "top_half":    "neumann",
+            "top_half":    "dirichlet",
         }
-}
+    }
 
     if rank == 0:
-        # mask = make_cylinder_mask(Nr, Nz, bcs)
-        mask = make_house_mask(Nr)
-        mid = Nz // 2
+        mask = make_cylinder_mask(Nr, Nz, bcs)
         plt.figure(figsize=(4, 8))
         plt.imshow(mask, aspect='auto', cmap='gray', origin='upper')
         plt.title("Domain mask")
