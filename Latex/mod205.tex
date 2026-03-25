@@ -28,7 +28,7 @@
     doi=true,
     eprint=false
 ]{biblatex}
-\addbibresource{mod204.bib}
+\addbibresource{mod205.bib}
 \DeclareFieldFormat{doi}{%
     \textsc{doi}\addcolon\space
     \href{https://doi.org/#1}{\textcolor{red}{\nolinkurl{#1}}}%
@@ -129,7 +129,7 @@ Ljubljana, March 2026 \\
 % Sections based on typical Model Analysis structure
 \section{Introduction}
 This week we finally move on from shooting methods to a more general class of methods for solving boundary value problems: relaxation methods. Specifically we will be taking 
-a look at the Successive Over-Relaxation (SOR) method, which is an iterative method for solving linear systems of equations that arise from discretizing partial differential equations (PDEs). 
+a look at the Successive Over-Relaxation (SOR) \cite{SOR} method, which is an iterative method for solving linear systems of equations that arise from discretizing partial differential equations (PDEs). 
 The SOR method is an extension of the Gauss-Seidel method, which itself is an improvement over the Jacobi method. The key idea behind SOR is to introduce a relaxation factor that can accelerate the convergence of the iterative process.
 That is to say, that instead of simply using the new values computed in the current iteration, we intentionally "over-relax" the update by a factor $\omega$ (the relaxation factor), which can be tuned to achieve faster convergence. \\
 
@@ -182,19 +182,15 @@ compute the Poisseuille coefficient for the flow.
 \begin{figure}[H]
     \centering
     \begin{tikzpicture}[scale=3]
-        % Let s = 1/3
         \def\s{0.333}
-        
-        % Draw the pipe cross-section outline
         \draw[thick] 
             % Start bottom left of stem
             (\s, 0)
             -- (\s, \s)          % up left side of stem
             -- (0, \s)           % left to left edge
             -- (0, 2*\s)         % up left body
-            % Roof left diagonal: from (0, 2s) to (1.5s, 3s) i.e. peak
             -- (1.0*\s, 3*\s)    % up to roof peak
-            -- (2*\s, 2*\s)        % down to right notch top  
+            -- (2*\s, 2*\s)      % down to right notch top  
             -- (1, 2*\s)         % right across
             -- (1, \s)           % down right body
             -- (2*\s, \s)        % left to right of stem
@@ -294,15 +290,118 @@ Our goal is to find the steady-state temperature distribution. We need to then r
     \end{subfigure}
 \end{figure}
 
-
 \section{Solution Overview}
+Ha! This week was perhaps more involved than the previous ones. I guess you could say that I was up to my \textit{old shenanigans} again. This week the standard 
+Python computational stack of \texttt{numpy}, \texttt{scipy}, and \texttt{matplotlib} was augmented by a favorite of mine \texttt{mpi4py}, which provides bindings 
+for the Message Passing Interface (MPI) standard in Python. \\
+
+As stated in the introduction, the SOR method is symmetric with respect to grid point parity, which means 
+we can independently update the two bipartite sublattices of the grid in a checkerboard pattern. This makes parallelization of the SOR method via domain decomposition very 
+straightforward. We can divide the full lattice into smaller subdomains, which I will refer to as "chunks", partially inspired by that one block game. Each chunk can be assigned to
+a different MPI rank, and the updates can be performed in parallel. The only communication that is required between the ranks is the exchange of boundary values between 
+neighboring chunks after each half-step of the SOR iteration, but since we can independently update the two sublattices \textit{ghost halo} broadcasting very simple and efficient.
+
+\begin{figure}[H]
+    \centering
+    \begin{tikzpicture}[]
+        \node [xshift=0cm,yshift=0cm,scale=1.33] at (current page.center)
+        {
+            \input{"checkerboard.tikz"}
+        };
+    \end{tikzpicture}
+    \caption{Ranks with Purple-Black and Green-Black sub-lattices exchanging a ghost column on their shared border.}
+    \label{fig:checkerboard}
+\end{figure}
+
+I'll skip the various details of the implementation, otherwise I'll never beat the \textit{too much comp-sci} allegations. But I will say that the implementation was very stable even with differing 
+rank topologies and sublattice sizes. Overriding the base Cartesian class to implement the cylindrical Laplace was also quite simple. As for boundary point handling, I used 
+the well known \textbf{Shortley-Weller} stencil \cite{ShortleyWeller}, which is locally a first-order discretization, but globally second-order accurate \cite{BrambleSecondProof}.
+The weights of the stencil are computed as:
+%
+\begin{flalign}
+    w_R = \frac{1}{\theta_R(\theta_R + \theta_L)}\>, \\
+    w_L = \frac{1}{\theta_L(\theta_R + \theta_L)}\>, \\
+    w_U = \frac{1}{\theta_U(\theta_U + \theta_D)}\>, \\
+    w_D = \frac{1}{\theta_D(\theta_U + \theta_D)}\>,
+\end{flalign}
+%
+where $\theta_R$, $\theta_L$, $\theta_U$, and $\theta_D$ are the fractional distances from the grid point to the boundary in the right, left, up, and down directions respectively. 
+I computed fractional distances once at the beginning of the simulation by ray-casting from each boundary-adjacent point in each of the four directions to the boundary against
+the boundary contour that was extracted via the marching squares algorithm. The update at the boundary-adjacent interior point is then computed as a weighted average as:
+%
+\begin{equation}
+    \tilde{u}_i = \frac{w_R u_R + w_L u_L + w_U u_U + w_D u_D - q_i \Delta x^2}{w_R + w_L + w_U + w_D}\>,
+\end{equation}
+%
+such that the SOR update is then given by:
+
+\begin{equation}
+    u_i^{(n+1)} = u_i^{(n)} + \omega\left(\tilde{u}_i - u_i^{(n)}\right)
+\end{equation}
+
+I also found recent development in higher order stencils exactly for in solvers that use ghost halo exchange \cite{coco2024fourthorder}, however this is entirely unnecessary for our purposes.
+In fact, I found that the pure 5-point stencil (equivalent to Shortley-Weller with $\theta = 1$) is already sufficiently accurate for our purposes of computing the Poisseuille coefficient on the house-shaped domain. At $N\approx 400$ the problematic 
+areas (diagonals and $270^\circ$ corner points) are few in comparison to the rest of the domain, and the error is localized to those areas. The local area error is then 
+of order $\mathcal{O}(\Delta x)$, but the global error, an integral over the whole domain, is of order $\mathcal{O}(\Delta x^2)$, which likely got \textit{eaten} by my 
+generous tolerance of $10^{-6}$ for convergence. \\
+
+
+Before moving on the main results we can attempt to verify that our implementation works properly by applying it to test cases for which we know the analytical solution. 
+We can start with the \textit{trivial} case of a square domain with Dirichlet boundary conditions. We know that the Poisseuille coefficient for a unit square domain
+is $C_{\text{square}} = 0.0351443$ \cite[Section 3-3]{White2006}. We can sweep over $\alpha$ to find the optimal $\omega$ for which the number of iterations required for convergence is minimized, and 
+also observe how the Poisseuille coefficient changes in that process. \Cref{fig:square-scan} shows the results of the scan over $\alpha$ for the square case.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.9\textwidth]{../Images/square_scan_results.pdf}
+    \caption{Scan over $\alpha$ for the square domain. The left-hand plot shows the convergence of the residuals for different values of $\alpha$, while the 
+    right-hand plot shows the number of iterations required for convergence and the computed Poisseuille coefficient for each value of $\alpha$.}
+    \label{fig:square-scan}
+\end{figure}
+
+I intentionally included the point $\alpha=0.0$ in the scan, which corresponds to $\omega=2.0$, to show that the method never converges, as is evident by the residuals not 
+decreasing at all. Taking a more zoomed in look we see that the optimal value of $\omega$ is around $1.985$, which for $N=404$ corresponds to $\alpha \approx 0.98$, which is 
+very close to the optimal value of $\alpha=1.0$ that we would get from \Cref{eq:omega-opt}. As seen from the colors on the right-hand scatter plot, we can see that the Poisseuille
+coefficient is very close to the analytical value for all values of $\alpha\in[0.0, 2.0]$, which were tested in this scan. So with this we've seen that our solver converges to the 
+correct solution and that it does so at the optimal $\omega$ that is close to the theoretical prediction. \\
+
+Next we can solve the Poisson equation for flow in a circular pipe. A classical result for the Poisseuille coefficient for a circular pipe is $C_{\text{circle}} = R^2/32 \approx 0.03125$ 
+\cite{LANDAU198744}, where $R=1$ is the radius of the pipe. \Cref{fig:circle-scan} shows the results of a wide scan over $\alpha$ for the circular pipe. It is clear that such wide scans 
+are not very useful for finding the optimal $\alpha$ since they are too coarse, but they do show the general behavior of the convergence with respect to $\alpha$.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.9\textwidth]{../Images/circle_scan_results.pdf}
+    \caption{}
+    \label{fig:circle-scan}
+\end{figure}
+
+We can clearly see that there exists an optimal $\omega$ (and thus $\alpha$) for which the number of iterations required for convergence is minimized, however since our scan was wide and 
+coarse we cannot determine the exact value from this plot. \Cref{fig:circle-scan-zoom} shows a zoomed in version of the scan around the optimal $\alpha$, where we can read 
+that the optimal $\omega$ is around $1.985$, which for $N=404$ corresponds to $\alpha \approx 0.98$, which is the same optimal $\omega$ as for the square case, and is again very close 
+to the optimal value of $\alpha=1.0$ that we would get from \Cref{eq:omega-opt}. This a sensible result if we consider that the optimal $\omega$ is determined by the spectral radius of the iteration matrix.
+The spectral radius is determined by the largest eigenvalue of the iteration matrix, which is tied to the \textit{characteristic length} of the domain, \textbf{not} its shape. 
+Since the characteristic length of the circular pipe is its radius, which is the same as the side length of the square domain, it makes sense that the optimal $\omega$ is the same for both cases.  
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.9\textwidth]{../Images/circle_scan_results_zoom.pdf}
+    \caption{}
+    \label{fig:circle-scan-zoom}
+\end{figure}
+
+As for the Poisseuille coefficient, we can see on the wider scan that the values do change with $\alpha$, but they are all close regardless of the value of $\alpha$. Upon closer inspection 
+for $\alpha\in[0.05, 2]$ we can see that the computed Poisseuille coefficient is very close to the analytical value, reaching $C^{(\text{num})}_{\text{circle}} = 0.03146$ at the optimal $\alpha$.
+With that I hope we've built a compelling case for the correctness of our implementation, and we can now move on to the main task of computing the velocity profile and Poisseuille coefficient for the house-shaped domain.
+
 \section{Results}
+
+
 \section{Conclusion and Comments}
 
 % Add references
-% \newpage
-% \bibliographystyle{unsrt}
-% \bibliography{main}
+\newpage
+\printbibliography
 
 % End document
 \end{document}

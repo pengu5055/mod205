@@ -79,6 +79,6 @@ if __name__ == "__main__":
         plt.subplots_adjust(bottom=0.05, hspace=0.125)
         parstr = f"Evaluated with Chebyshev Acc., $N={N}$, $\\rho_{{jac}} = \\cos(\\pi/N)$ on {size} Chunks/MPI Ranks"
         plt.figtext(0.5, 0.01, parstr, ha='center', va='bottom', transform=plt.gcf().transFigure, fontsize=12, weight="medium")
-        plt.savefig("./Images/mask_solutions.pdf", dpi=450)
+        plt.savefig("./Images/mask_solutions2.pdf", dpi=450)
         plt.close()
         # plt.show()

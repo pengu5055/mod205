@@ -291,7 +291,7 @@ class SORLattice:
                 t_min = None
                 for (ax, ay), (bx, by) in segments:
                     t = self._ray_intersect_segment(px, py, ddx, ddy, ax, ay, bx, by)
-                    if t is None:
+                    if t is not None:
                         if t_min is None or t < t_min:
                             t_min = t
 
