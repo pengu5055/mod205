@@ -4,14 +4,9 @@ Task 2a: Cylinderical SOR with Upper Half Dirichlet
 import numpy as np
 from src import *
 from rich import print
-import matplotlib.pyplot as plt
-import matplotlib as mpl
-import cmasher as cmr
 from mpi4py import MPI
 from time import time
 
-mpl.style.use("./vrm.mplstyle")
-mpl.use("tkagg")
 # Problem parameters
 R    = 1.0
 H    = 2 * R
